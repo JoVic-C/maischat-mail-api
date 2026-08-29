@@ -1,0 +1,21 @@
+node_modules
+dist
+coverage
+
+# Segredos: nunca entram no contexto de build.
+.env
+*.env
+
+# Não são usados pela imagem — só engordam o contexto enviado ao daemon.
+uploads
+*.log
+*.md
+docker-compose*
+.git
+.github
+.husky
+biome.json
+commitlint.config.js
+.vscode
+.idea
+.DS_Store

@@ -1,0 +1,108 @@
+services:
+  mongo:
+    image: mongo:7
+    container_name: mailpulse-mongo
+    restart: unless-stopped
+    # Porta exposta APENAS no loopback do host: dentro do compose o backend acessa
+    # pela rede interna. Publicar em 0.0.0.0 deixaria o banco sem senha aberto na rede.
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - mailpulse_mongo:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    container_name: mailpulse-redis
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - mailpulse_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: .
+    container_name: mailpulse-backend
+    restart: unless-stopped
+    # Espera os serviços ficarem SAUDÁVEIS (não só "criados"): sem isso o backend
+    # sobe antes do Mongo aceitar conexão e morre no connectDB.
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    # Segredos e configuração de ambiente vêm do .env (que NÃO vai para o git).
+    # Veja .env.example para a lista completa de variáveis.
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      # Dentro da rede do compose, os hosts são os NOMES dos serviços (não localhost).
+      # Estes dois sobrescrevem o que vier do .env, que aponta para localhost em dev.
+      MONGO_URI: mongodb://mongo:27017/mailpulse
+      REDIS_URL: redis://redis:6379
+    volumes:
+      # Imagens dos emails e anexos das campanhas ficam em disco. Sem este volume,
+      # todo upload é perdido a cada rebuild/redeploy do container.
+      - mailpulse_uploads:/app/uploads
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/api/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  frontend:
+    # O contexto é a pasta do frontend (irmã desta); o nginx dele faz proxy de
+    # /api e /uploads para o backend pela rede interna do compose.
+    build:
+      context: ../frontend
+    container_name: mailpulse-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+
+  # Sink SMTP para testar envio à mão. Aceita qualquer email e NÃO entrega nada —
+  # é o que torna seguro disparar campanha de teste: apontar para um provedor real
+  # geraria bounce em massa e queimaria a reputação do domínio.
+  #
+  # Fica atrás de um profile: `docker compose up` normal não sobe isto.
+  #   docker compose --profile smtp up -d mailpit
+  # Cadastre-o como servidor SMTP do cliente: host `mailpit`, porta 1025, sem autenticação.
+  # Interface para ler o que "chegou" em http://localhost:8025
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: mailpulse-mailpit
+    profiles: ["smtp"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:1025:1025" # SMTP
+      - "127.0.0.1:8025:8025" # UI
+    environment:
+      # Teto de mensagens guardadas: sem isto o Mailpit acumula tudo em memória.
+      MP_MAX_MESSAGES: 50000
+      MP_SMTP_MAX_RECIPIENTS: 100
+      # Modo Chaos: injeta erros SMTP com taxa configurável, para exercitar à mão os
+      # caminhos de bounce, retry e auto-pausa.
+      MP_ENABLE_CHAOS: ${MAILPIT_CHAOS:-false}
+
+volumes:
+  mailpulse_mongo:
+  mailpulse_redis:
+  mailpulse_uploads:

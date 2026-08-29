@@ -1,0 +1,114 @@
+# mMail — stack para o EasyPanel.
+#
+# Difere do docker-compose.yml (uso local) em três pontos, todos porque o EasyPanel
+# assume responsabilidades que localmente são nossas:
+#
+#   1. NENHUMA porta publicada no host. O EasyPanel roteia para a porta interna do
+#      container e cuida de domínio e TLS. Publicar porta aqui brigaria com ele e
+#      ainda exporia o serviço fora do proxy.
+#   2. Variáveis vêm do painel (aba Environment), não de um arquivo. O `.env` não
+#      existe no servidor — por isso ele é declarado como opcional.
+#   3. Mongo e Redis sem porta exposta: só a rede interna da stack os alcança.
+#
+# No EasyPanel: criar um serviço do tipo Compose, apontar para este arquivo e
+# preencher as variáveis listadas em .env.example. Depois, publicar o domínio
+# apontando para o serviço `frontend`, porta 80.
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Opcional: se existir um .env ao lado, ele é lido; no EasyPanel as variáveis
+    # chegam pelo painel e este bloco simplesmente não faz nada.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NODE_ENV: production
+      PORT: '3000'
+      # Hosts internos da stack — nunca localhost.
+      MONGO_URI: mongodb://mongo:27017/mailpulse
+      REDIS_URL: redis://redis:6379
+      # Obrigatórias: a API encerra no boot se faltarem.
+      JWT_SECRET: ${JWT_SECRET:?defina JWT_SECRET no painel}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?defina ENCRYPTION_KEY no painel}
+      # Precisam ser o DOMÍNIO REAL. Deixá-las em localhost faz todo email sair com
+      # pixel, clique e descadastro quebrados, e os links de convite e recuperação
+      # de senha apontando para lugar nenhum — e o email já enviado não se corrige.
+      PUBLIC_API_URL: ${PUBLIC_API_URL:?defina a URL pública da API}
+      FRONTEND_URL: ${FRONTEND_URL:?defina a URL pública do painel}
+      # Opcionais, com o mesmo default do código quando ausentes.
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      XMAILER_SMTP_HOST: ${XMAILER_SMTP_HOST:-}
+      XMAILER_SMTP_PORT: ${XMAILER_SMTP_PORT:-587}
+      XMAILER_SMTP_USER: ${XMAILER_SMTP_USER:-}
+      XMAILER_SMTP_PASS: ${XMAILER_SMTP_PASS:-}
+      XMAILER_FROM_NAME: ${XMAILER_FROM_NAME:-mMail}
+      XMAILER_FROM_EMAIL: ${XMAILER_FROM_EMAIL:-}
+      XMAILER_WEBHOOK_TOKEN: ${XMAILER_WEBHOOK_TOKEN:-}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+    volumes:
+      # Imagens dos emails e anexos das campanhas. Sem este volume, todo upload
+      # é perdido a cada redeploy.
+      - uploads:/app/uploads
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "require('http').get('http://127.0.0.1:3000/api/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # É este serviço que recebe o domínio no EasyPanel (porta 80). O nginx dele serve
+  # o painel e faz proxy de /api e /uploads para o backend pela rede interna — por
+  # isso o backend não precisa de domínio próprio nem de porta publicada.
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  mongo_data:
+  redis_data:
+  uploads:

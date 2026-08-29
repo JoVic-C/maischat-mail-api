@@ -1,0 +1,3 @@
+# services/ — regra de negócio (a desenvolver):
+# dashboard · list · contact · template · campaign · smtp · email (Nodemailer)
+# Padrão: sem req/res; lança AppError; retorna dados puros.

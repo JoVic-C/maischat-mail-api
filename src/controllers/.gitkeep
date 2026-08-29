@@ -1,0 +1,3 @@
+# controllers/ — camada HTTP (a desenvolver), um por módulo:
+# dashboard · list · contact · template · campaign · smtp · tracking
+# Padrão: recebe req/res, chama o service, faz next(err) em caso de erro.
