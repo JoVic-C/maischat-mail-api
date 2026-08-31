@@ -1,73 +1,49 @@
 # mMail — stack para o EasyPanel.
 #
-# Difere do docker-compose.yml (uso local) em três pontos, todos porque o EasyPanel
-# assume responsabilidades que localmente são nossas:
+# Aqui só a APLICAÇÃO. O Mongo e o Redis são serviços gerenciados pelo próprio
+# EasyPanel (criados pela interface), e chegam por MONGO_URI e REDIS_URL — por isso
+# não existem serviços de banco neste arquivo. Se você preferir subir os dois dentro
+# desta stack, use o docker-compose.yml local como base.
 #
-#   1. NENHUMA porta publicada no host. O EasyPanel roteia para a porta interna do
-#      container e cuida de domínio e TLS. Publicar porta aqui brigaria com ele e
-#      ainda exporia o serviço fora do proxy.
-#   2. Variáveis vêm do painel (aba Environment), não de um arquivo. O `.env` não
-#      existe no servidor — por isso ele é declarado como opcional.
-#   3. Mongo e Redis sem porta exposta: só a rede interna da stack os alcança.
+# Diferenças em relação ao compose local, todas porque o EasyPanel assume o que
+# localmente é nosso:
 #
-# No EasyPanel: criar um serviço do tipo Compose, apontar para este arquivo e
-# preencher as variáveis listadas em .env.example. Depois, publicar o domínio
-# apontando para o serviço `frontend`, porta 80.
+#   1. NENHUMA porta publicada. Ele roteia para a porta interna e cuida de TLS.
+#   2. Variáveis vêm do painel (aba Environment), não de arquivo — o `.env` é opcional.
+#   3. Domínio vai no serviço `frontend`; o backend fica só na rede interna.
 
 services:
-  mongo:
-    image: mongo:7
-    restart: unless-stopped
-    volumes:
-      - mongo_data:/data/db
-    healthcheck:
-      test: ['CMD', 'mongosh', '--quiet', '--eval', "db.adminCommand('ping').ok"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   backend:
     build:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
-    depends_on:
-      mongo:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    # Opcional: se existir um .env ao lado, ele é lido; no EasyPanel as variáveis
-    # chegam pelo painel e este bloco simplesmente não faz nada.
     env_file:
       - path: .env
         required: false
     environment:
       NODE_ENV: production
       PORT: '3000'
-      # Hosts internos da stack — nunca localhost.
-      MONGO_URI: mongodb://mongo:27017/mailpulse
-      REDIS_URL: redis://redis:6379
-      # Obrigatórias: a API encerra no boot se faltarem.
+
+      # ── Serviços gerenciados do EasyPanel ──
+      # Copie a "URL de Conexão Interna" de cada um. Dois cuidados no Mongo:
+      # incluir o NOME DO BANCO no fim do host e, como o usuário é criado no banco
+      # `admin`, acrescentar authSource=admin — sem isso a autenticação falha.
+      #   mongodb://user:senha@outros_mongomail:27017/mmail?authSource=admin&tls=false
+      MONGO_URI: ${MONGO_URI:?cole a URL de conexão interna do Mongo}
+      REDIS_URL: ${REDIS_URL:?cole a URL de conexão interna do Redis}
+
+      # ── Obrigatórias: a API encerra no boot se faltarem ──
       JWT_SECRET: ${JWT_SECRET:?defina JWT_SECRET no painel}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?defina ENCRYPTION_KEY no painel}
-      # Precisam ser o DOMÍNIO REAL. Deixá-las em localhost faz todo email sair com
-      # pixel, clique e descadastro quebrados, e os links de convite e recuperação
-      # de senha apontando para lugar nenhum — e o email já enviado não se corrige.
+
+      # ── Domínio real, não localhost ──
+      # Vão dentro dos emails: pixel de abertura, link de clique, descadastro,
+      # convite e recuperação de senha. Errado aqui, o email já enviado não se corrige.
       PUBLIC_API_URL: ${PUBLIC_API_URL:?defina a URL pública da API}
       FRONTEND_URL: ${FRONTEND_URL:?defina a URL pública do painel}
-      # Opcionais, com o mesmo default do código quando ausentes.
+
+      # ── Opcionais (mesmo default do código quando ausentes) ──
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
       SENTRY_DSN: ${SENTRY_DSN:-}
       XMAILER_SMTP_HOST: ${XMAILER_SMTP_HOST:-}
@@ -109,6 +85,4 @@ services:
         condition: service_healthy
 
 volumes:
-  mongo_data:
-  redis_data:
   uploads:
