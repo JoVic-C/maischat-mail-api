@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { runWithTenant } from '../config/tenantContext';
 import { BadRequestError, NotFoundError } from '../errors';
 import Tenant from '../models/Tenant';
 import User, { type UserDocument } from '../models/User';
@@ -97,7 +98,15 @@ export class InviteService {
    * — o convite nunca depende do email ter saído.
    */
   async sendByEmail(user: UserDocument, link: InviteLink): Promise<{ emailSent: boolean }> {
-    const smtp = (await smtpService.getDefaultForSending()) ?? smtpService.getFallbackSmtp();
+    // O escopo do cliente é aberto a partir do dono do convite, e não herdado da
+    // requisição: o convite também parte da criação de cliente, uma rota que roda
+    // ACIMA dos clientes e não tem tenantContext. Sem isto o plugin tenantScope
+    // recusa a consulta ao SMTP — e como esta linha fica fora do try abaixo, o erro
+    // subia e desfazia a criação do cliente inteira.
+    const proprio = user.tenantId
+      ? await runWithTenant(String(user.tenantId), async () => await smtpService.getDefaultForSending())
+      : null;
+    const smtp = proprio ?? smtpService.getFallbackSmtp();
     if (!smtp) return { emailSent: false };
 
     const tenant = user.tenantId ? await Tenant.findById(user.tenantId).select('name').lean() : null;

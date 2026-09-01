@@ -5,10 +5,11 @@ import Campaign from '../models/Campaign';
 import Contact from '../models/Contact';
 import List from '../models/List';
 import Tenant, { type ITenant, type TenantDocument } from '../models/Tenant';
-import User from '../models/User';
-import inviteService, { type InviteLink } from './invite.service';
+import User, { type UserDocument } from '../models/User';
+import { logSideEffect } from '../utils/logger';
 import platformSettingsService from './platformSettings.service';
 import { deleteAllOfTenant } from './tenantPurge';
+import tenantWelcomeService, { type TenantWelcomeResult } from './tenantWelcome.service';
 
 export interface CreateTenantInput {
   name: string;
@@ -76,15 +77,16 @@ export class TenantService {
   /** Cria o cliente e o primeiro admin dele, numa operação só. */
   async create(
     data: CreateTenantInput
-  ): Promise<{ id: string; slug: string; adminEmail: string; invite?: InviteLink & { emailSent: boolean } }> {
+  ): Promise<{ id: string; slug: string; adminEmail: string; welcome?: TenantWelcomeResult }> {
     const slug = data.slug.toLowerCase().trim();
     if (await Tenant.findOne({ slug })) throw new ConflictError('Já existe um cliente com este identificador.');
 
     const adminEmail = data.adminEmail.toLowerCase().trim();
     const tenant = await Tenant.create({ name: data.name, slug, isActive: true });
 
+    let admin: UserDocument;
     try {
-      const admin = await User.create({
+      admin = await User.create({
         tenantId: tenant._id,
         email: adminEmail,
         // Sem senha informada, entra um placeholder aleatório que o convite substitui.
@@ -93,14 +95,23 @@ export class TenantService {
         role: 'admin',
         isActive: true,
       });
-
-      const invite = data.adminPassword ? undefined : await inviteService.issueAndSend(admin);
-      return { id: String(tenant._id), slug, adminEmail, invite };
     } catch (err) {
       // Sem admin o cliente nasce inacessível — desfaz para não deixar lixo.
       await tenant.deleteOne();
       throw err;
     }
+
+    // Fora do try acima de propósito: o cliente já existe e está utilizável. Falha no
+    // email de boas-vindas é registrada e devolvida como `emailSent: false`, nunca
+    // desfaz a criação — antes disso, uma falha aqui apagava o cliente recém-criado.
+    let welcome: TenantWelcomeResult | undefined;
+    try {
+      welcome = await tenantWelcomeService.send(tenant, admin, Boolean(data.adminPassword));
+    } catch (err) {
+      logSideEffect('tenant.create.welcome', err, { tenant: slug, adminEmail });
+    }
+
+    return { id: String(tenant._id), slug, adminEmail, welcome };
   }
 
   async update(id: string, data: UpdateTenantInput): Promise<TenantDocument> {

@@ -14,7 +14,14 @@ export const getTenants = async (req: Request, res: Response, next: NextFunction
 export const createTenant = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const tenant = await tenantService.create(req.body);
-    res.status(201).json({ message: 'Cliente criado.', tenant });
+
+    // O email é best-effort: dizer só "Cliente criado" esconderia do superadmin que o
+    // admin não recebeu nada. Quando falha, o link volta no corpo para repasse manual.
+    const message = tenant.welcome?.emailSent
+      ? `Cliente criado. Email de boas-vindas enviado para ${tenant.adminEmail}.`
+      : 'Cliente criado, mas o email de boas-vindas não pôde ser enviado. Repasse o link de acesso ao administrador.';
+
+    res.status(201).json({ message, tenant });
   } catch (err) {
     logCtrlError('tenant.createTenant', req, err);
     next(err);
