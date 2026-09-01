@@ -5,6 +5,7 @@ import multer from 'multer';
 
 import { BadRequestError } from '../errors';
 import { ensureImportDir, IMPORT_DIR } from '../services/contactImport.service';
+import { isLegacyExcel, isSupportedSheet, sheetExtension } from '../utils/sheetStream';
 
 const UPLOAD_DIR = 'uploads';
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -59,36 +60,40 @@ export const uploadDoc = multer({
 });
 
 /**
- * CSV de importação de contatos.
+ * Planilha de importação de contatos (.csv ou .xlsx).
  *
  * Vai para IMPORT_DIR (fora de `uploads/`, que é servido estático e sem login — um
- * CSV aqui é a base de contatos de um cliente) e é gravado em disco em streaming:
+ * arquivo aqui é a base de contatos de um cliente) e é gravado em disco em streaming:
  * o arquivo nunca passa inteiro pela memória do processo.
  */
 const IMPORT_MAX_MB = Number(process.env.IMPORT_MAX_MB || 100);
 
-const ALLOWED_CSV = new Set([
-  'text/csv',
-  'text/plain',
-  'application/csv',
-  'application/vnd.ms-excel', // o que o Windows costuma anunciar para .csv
-  'application/octet-stream', // alguns navegadores não classificam o Blob colado
-]);
-
-const csvStorage = multer.diskStorage({
+const importStorage = multer.diskStorage({
   destination: (_req, _file, cb) => {
     ensureImportDir();
     cb(null, IMPORT_DIR);
   },
-  filename: (_req, _file, cb) => cb(null, `${crypto.randomBytes(12).toString('hex')}.csv`),
+  // A extensão é PRESERVADA de propósito: é por ela que o worker decide entre o
+  // leitor de CSV e o de planilha. Forçar `.csv` aqui faria um .xlsx ser lido como
+  // texto e a importação encontrar zero linhas válidas.
+  filename: (_req, file, cb) =>
+    cb(null, `${crypto.randomBytes(12).toString('hex')}${sheetExtension(file.originalname) || '.csv'}`),
 });
 
-export const uploadCsv = multer({
-  storage: csvStorage,
+export const uploadImportFile = multer({
+  storage: importStorage,
   limits: { fileSize: IMPORT_MAX_MB * 1024 * 1024, files: 1 },
   fileFilter: (_req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    if (ALLOWED_CSV.has(file.mimetype) || ext === '.csv' || ext === '.txt') cb(null, true);
-    else cb(new BadRequestError('Envie um arquivo .csv.'));
+    // A decisão é pela EXTENSÃO, não pelo mimetype: o Windows anuncia .csv como
+    // `application/vnd.ms-excel`, o mesmo do .xls — que não sabemos ler.
+    if (isLegacyExcel(file.originalname)) {
+      cb(new BadRequestError('Formato .xls (Excel 97-2003) não é suportado. Salve como .xlsx ou CSV.'));
+      return;
+    }
+    if (isSupportedSheet(file.originalname)) {
+      cb(null, true);
+      return;
+    }
+    cb(new BadRequestError('Envie um arquivo .csv ou .xlsx.'));
   },
 });

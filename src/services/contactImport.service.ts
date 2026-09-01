@@ -13,9 +13,10 @@ import readline from 'node:readline';
 import { Types } from 'mongoose';
 import { BadRequestError, ConflictError, NotFoundError } from '../errors';
 import ImportJob, { type IImportJob, type ImportCounters, type ImportJobDocument } from '../models/ImportJob';
-import { inBatches, streamCsvRows } from '../utils/csvStream';
+import { inBatches } from '../utils/csvStream';
 import { buildInvalidExcel, type InvalidRow } from '../utils/excel';
 import { logger, logSideEffect } from '../utils/logger';
+import { streamSheetRows } from '../utils/sheetStream';
 import contactService, { type ClassifiedRow, type ValidatedRow } from './contact.service';
 
 /**
@@ -165,7 +166,7 @@ export class ContactImportService {
     try {
       let sinceFlush = 0;
 
-      for await (const batch of inBatches(streamCsvRows(job.sourcePath), VALIDATE_BATCH)) {
+      for await (const batch of inBatches(streamSheetRows(job.sourcePath), VALIDATE_BATCH)) {
         const classified = await contactService.classifyBatch(batch, listIds, ctx);
 
         for (const row of classified) {
