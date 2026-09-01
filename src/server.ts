@@ -14,6 +14,7 @@ import { errorHandler } from './middleware/errorHandler';
 import { generalLimiter } from './middleware/rateLimit';
 import { systemContext, tenantContext } from './middleware/tenant';
 import { startEmailWorker, stopEmailWorker } from './queue/email.worker';
+import { startImportWorker, stopImportWorker } from './queue/import.worker';
 import { startSchedulerWorker, stopSchedulerWorker } from './queue/scheduler.worker';
 import authRoutes from './routes/auth';
 import bounceRoutes from './routes/bounce';
@@ -145,6 +146,7 @@ async function shutdown(signal: string): Promise<void> {
   try {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await stopEmailWorker();
+    await stopImportWorker();
     await stopSchedulerWorker();
     await disconnectRedis();
     await disconnectDB();
@@ -166,5 +168,7 @@ const server = app.listen(PORT, async () => {
   logger.info(`🟢 mMail API listening on port ${PORT} (${process.env.NODE_ENV || 'development'})`);
   // Assíncrono: o worker lê concorrência e taxa dos ajustes da plataforma antes de subir.
   await startEmailWorker();
+  // Validação e gravação de CSV grande: fila própria, para não disputar com o envio.
+  await startImportWorker();
   startSchedulerWorker();
 });

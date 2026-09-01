@@ -1,6 +1,5 @@
 import type { NextFunction, Request, Response } from 'express';
 import contactService from '../services/contact.service';
-import { buildInvalidExcel } from '../utils/excel';
 import { logCtrlError } from '../utils/logger';
 
 export const getContacts = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -87,61 +86,6 @@ export const bulkDeleteContacts = async (req: Request, res: Response, next: Next
     res.json({ message: `${result.deleted} contato(s) excluído(s).`, ...result });
   } catch (err) {
     logCtrlError('contact.bulkDeleteContacts', req, err);
-    next(err);
-  }
-};
-
-export const importContacts = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-  try {
-    const result = await contactService.importCsv(req.body.csv, req.body.listIds ?? []);
-    res.json({
-      message: `${result.imported} importado(s), ${result.invalid.length} incorreto(s).`,
-      ...result,
-    });
-  } catch (err) {
-    logCtrlError('contact.importContacts', req, err);
-    next(err);
-  }
-};
-
-export const exportInvalidContacts = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-  try {
-    const buffer = await buildInvalidExcel(req.body.rows ?? []);
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', 'attachment; filename="contatos-incorretos.xlsx"');
-    res.send(buffer);
-  } catch (err) {
-    logCtrlError('contact.exportInvalidContacts', req, err);
-    next(err);
-  }
-};
-
-export const validateContactsStream = async (req: Request, res: Response): Promise<void> => {
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache, no-transform');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no'); // impede buffering em proxies (nginx)
-  res.flushHeaders?.();
-
-  const send = (e: unknown): boolean => res.write(`data: ${JSON.stringify(e)}\n\n`);
-
-  try {
-    await contactService.validateCsvStream(req.body.csv, req.body.listIds ?? [], send);
-  } catch (err) {
-    logCtrlError('contact.validateContactsStream', req, err);
-    // headers já foram enviados (200), então reportamos o erro pelo próprio stream
-    send({ type: 'error', message: err instanceof Error ? err.message : 'Erro ao validar.' });
-  } finally {
-    res.end();
-  }
-};
-
-export const importValidatedContacts = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-  try {
-    const result = await contactService.importValidated(req.body.rows ?? [], req.body.listIds ?? []);
-    res.json({ message: `${result.imported} importado(s).`, ...result });
-  } catch (err) {
-    logCtrlError('contact.importValidatedContacts', req, err);
     next(err);
   }
 };

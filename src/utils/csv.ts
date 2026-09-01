@@ -2,13 +2,13 @@ export interface CsvRow {
   [header: string]: string;
 }
 
-function detectDelimiter(headerLine: string): string {
+export function detectDelimiter(headerLine: string): string {
   const commas = (headerLine.match(/,/g) || []).length;
   const semis = (headerLine.match(/;/g) || []).length;
   return semis > commas ? ';' : ',';
 }
 
-function splitLine(line: string, delimiter: string): string[] {
+export function splitLine(line: string, delimiter: string): string[] {
   const out: string[] = [];
   let current = '';
   let inQuotes = false;

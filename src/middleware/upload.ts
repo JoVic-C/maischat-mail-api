@@ -4,6 +4,7 @@ import path from 'node:path';
 import multer from 'multer';
 
 import { BadRequestError } from '../errors';
+import { ensureImportDir, IMPORT_DIR } from '../services/contactImport.service';
 
 const UPLOAD_DIR = 'uploads';
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -54,5 +55,40 @@ export const uploadDoc = multer({
   fileFilter: (_req, file, cb) => {
     if (ALLOWED_DOC.has(file.mimetype)) cb(null, true);
     else cb(new BadRequestError('Tipo de arquivo não permitido para anexo.'));
+  },
+});
+
+/**
+ * CSV de importação de contatos.
+ *
+ * Vai para IMPORT_DIR (fora de `uploads/`, que é servido estático e sem login — um
+ * CSV aqui é a base de contatos de um cliente) e é gravado em disco em streaming:
+ * o arquivo nunca passa inteiro pela memória do processo.
+ */
+const IMPORT_MAX_MB = Number(process.env.IMPORT_MAX_MB || 100);
+
+const ALLOWED_CSV = new Set([
+  'text/csv',
+  'text/plain',
+  'application/csv',
+  'application/vnd.ms-excel', // o que o Windows costuma anunciar para .csv
+  'application/octet-stream', // alguns navegadores não classificam o Blob colado
+]);
+
+const csvStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    ensureImportDir();
+    cb(null, IMPORT_DIR);
+  },
+  filename: (_req, _file, cb) => cb(null, `${crypto.randomBytes(12).toString('hex')}.csv`),
+});
+
+export const uploadCsv = multer({
+  storage: csvStorage,
+  limits: { fileSize: IMPORT_MAX_MB * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (ALLOWED_CSV.has(file.mimetype) || ext === '.csv' || ext === '.txt') cb(null, true);
+    else cb(new BadRequestError('Envie um arquivo .csv.'));
   },
 });

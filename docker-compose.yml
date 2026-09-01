@@ -58,6 +58,9 @@ services:
       # Imagens dos emails e anexos das campanhas ficam em disco. Sem este volume,
       # todo upload é perdido a cada rebuild/redeploy do container.
       - mailpulse_uploads:/app/uploads
+      # CSVs de importação em processamento. Volume próprio porque, ao contrário de
+      # uploads, este conteúdo NÃO pode ser servido publicamente.
+      - mailpulse_imports:/app/data
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/api/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
       interval: 30s
@@ -106,3 +109,4 @@ volumes:
   mailpulse_mongo:
   mailpulse_redis:
   mailpulse_uploads:
+  mailpulse_imports:

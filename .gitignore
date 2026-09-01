@@ -1,6 +1,9 @@
 node_modules/
 dist/
-.env
+.env*
+!.env.example
 *.log
 uploads/
+# CSVs de importação em processamento (dados de contatos de clientes).
+data/
 coverage/

@@ -59,6 +59,9 @@ services:
       # Imagens dos emails e anexos das campanhas. Sem este volume, todo upload
       # é perdido a cada redeploy.
       - uploads:/app/uploads
+      # CSVs de importação em processamento. Volume próprio porque, ao contrário de
+      # uploads, este conteúdo NÃO pode ser servido publicamente.
+      - imports:/app/data
     healthcheck:
       test:
         [
@@ -86,3 +89,4 @@ services:
 
 volumes:
   uploads:
+  imports:

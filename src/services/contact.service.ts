@@ -1,11 +1,10 @@
 import { type AnyBulkWriteOperation, Types } from 'mongoose';
 import { requireTenantId } from '../config/tenantContext';
-import { BadRequestError, ConflictError, NotFoundError } from '../errors';
+import { ConflictError, NotFoundError } from '../errors';
 import Contact, { type ContactDocument, type IContact } from '../models/Contact';
 import List from '../models/List';
-import { type CsvRow, parseCsv } from '../utils/csv';
+import type { CsvRow } from '../utils/csv';
 import { domainHasMail, EMAIL_RE } from '../utils/emailHygiene';
-import type { InvalidRow } from '../utils/excel';
 import { decrypt } from '../utils/fieldCrypto';
 import { escapeRegex } from '../utils/regex';
 
@@ -38,12 +37,6 @@ export interface ContactListResult {
   limit: number;
 }
 
-export interface ImportResult {
-  imported: number; // criados (corretos)
-  invalid: InvalidRow[]; // incorretos: formato, domínio, duplicado
-  total: number;
-}
-
 export interface ValidatedRow {
   email: string;
   name?: string;
@@ -62,21 +55,26 @@ export interface ValidatedRow {
  */
 export type RowKind = 'new' | 'add-to-list' | 'in-list' | 'already' | 'invalid';
 
-/** Eventos emitidos durante a validação em streaming (SSE). */
-export type ValidateStreamEvent =
-  | { type: 'start'; total: number }
-  | {
-      type: 'row';
-      index: number;
-      email: string;
-      name: string;
-      phone: string;
-      company: string;
-      metadata: Record<string, string>;
-      kind: RowKind;
-      reason?: string;
-    }
-  | { type: 'done'; total: number };
+/** Uma linha do CSV depois de classificada, pronta para ser gravada ou recusada. */
+export interface ClassifiedRow extends Required<ValidatedRow> {
+  kind: RowKind;
+  reason?: string;
+}
+
+/**
+ * Estado que atravessa os lotes de uma mesma validação.
+ * - mxCache → domínios já resolvidos; sem ele o mesmo domínio seria consultado a
+ *   cada lote, e uma lista real repete pouquíssimos domínios milhares de vezes.
+ * - seen    → emails já vistos NESTE arquivo; é o que detecta linha repetida.
+ *
+ * `seen` é a única estrutura que cresce com o tamanho do arquivo: medido, custa
+ * ~100 MB de heap para 1 milhão de emails. É o teto prático de uma importação, e a
+ * razão de a concorrência do worker de importação ser baixa.
+ */
+export interface ClassifyContext {
+  mxCache: Map<string, boolean>;
+  seen: Set<string>;
+}
 
 /** Colunas reconhecidas em PT e EN — o resto vira metadata. */
 const COLUMN_ALIASES = {
@@ -85,9 +83,6 @@ const COLUMN_ALIASES = {
   phone: ['phone', 'telefone', 'celular', 'fone', 'mobile', 'whatsapp'],
   company: ['company', 'empresa', 'organização', 'organizacao'],
 } as const;
-
-/** Quantas linhas do CSV são resolvidas por rodada (1 query de existência + 1 rodada de DNS). */
-const IMPORT_CHUNK = 200;
 
 interface ExistingContact {
   _id: Types.ObjectId;
@@ -252,13 +247,6 @@ export class ContactService {
     return { deleted: result.deletedCount ?? 0 };
   }
 
-  /** Quebra uma lista em lotes de tamanho fixo. */
-  private chunk<T>(items: T[], size: number): T[][] {
-    const out: T[][] = [];
-    for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
-    return out;
-  }
-
   /** Uma query para descobrir quais emails do lote já existem (em vez de um findOne por linha). */
   private async findExistingByEmail(emails: string[]): Promise<Map<string, ExistingContact>> {
     if (!emails.length) return new Map();
@@ -323,126 +311,26 @@ export class ContactService {
     }
   }
 
-  /** Importa um CSV: cria novos, mescla existentes (sem sobrescrever), vincula às listas. */
-  async importCsv(csvContent: string, listIds: string[] = []): Promise<ImportResult> {
-    const rows = parseCsv(csvContent);
-    if (!rows.length) throw new BadRequestError('CSV vazio ou sem linhas de dados.');
-
-    const result: ImportResult = { imported: 0, invalid: [], total: rows.length };
-    const mxCache = new Map<string, boolean>();
-    const seen = new Set<string>();
-
-    // Em lotes: por rodada é 1 query de existência + DNS em paralelo + 1 insert em massa,
-    // em vez de 1 findOne + 1 DNS + 1 insert POR LINHA.
-    for (const rowChunk of this.chunk(rows, IMPORT_CHUNK)) {
-      const candidates: ReturnType<typeof this.mapRow>[] = [];
-
-      for (const row of rowChunk) {
-        const fields = this.mapRow(row);
-        const email = fields.email;
-
-        if (!email || !EMAIL_RE.test(email)) {
-          result.invalid.push({ email: email || '(vazio)', name: fields.name, reason: 'Formato inválido' });
-          continue;
-        }
-        if (seen.has(email)) {
-          result.invalid.push({ email, name: fields.name, reason: 'Repetido no arquivo' });
-          continue;
-        }
-        seen.add(email);
-        candidates.push(fields);
-      }
-      if (!candidates.length) continue;
-
-      const emails = candidates.map((c) => c.email);
-      const [existing] = await Promise.all([this.findExistingByEmail(emails), this.warmDomainCache(emails, mxCache)]);
-
-      const linkOps: AnyBulkWriteOperation[] = [];
-      const toInsert: NewContactDoc[] = [];
-      const byEmail = new Map(candidates.map((c) => [c.email, c]));
-
-      for (const fields of candidates) {
-        const found = existing.get(fields.email);
-        if (found) {
-          // Já cadastrado: mescla nas listas de destino (sem sobrescrever os dados).
-          const current = new Set(found.lists.map(String));
-          const toAdd = listIds.filter((l) => !current.has(l));
-          if (toAdd.length) {
-            linkOps.push({
-              updateOne: {
-                filter: { _id: found._id },
-                update: { $addToSet: { lists: { $each: toAdd.map((id) => new Types.ObjectId(id)) } } },
-              },
-            });
-            result.imported++; // vinculado à(s) nova(s) lista(s)
-          }
-          continue;
-        }
-
-        // O warmDomainCache já resolveu os domínios do lote em paralelo, então esta
-        // chamada é sempre um acerto de cache — mas passa pelo helper em vez de ler o
-        // Map por fora, o que manteria a regra dependendo de um efeito colateral.
-        if (!(await domainHasMail(fields.email.split('@')[1] ?? '', mxCache))) {
-          result.invalid.push({ email: fields.email, name: fields.name, reason: 'Domínio inexistente' });
-          continue;
-        }
-
-        toInsert.push({
-          email: fields.email,
-          name: fields.name,
-          phone: fields.phone,
-          company: fields.company,
-          lists: listIds,
-          metadata: fields.metadata,
-        });
-      }
-
-      await this.linkToLists(linkOps);
-      const { inserted, duplicates } = await this.insertNew(toInsert);
-      result.imported += inserted;
-      for (const email of duplicates) {
-        result.invalid.push({ email, name: byEmail.get(email)?.name ?? '', reason: 'Já cadastrado' });
-      }
-    }
-
-    await this.syncListCounts(listIds);
-    return result;
-  }
-
   /**
-   * Valida um CSV em streaming: emite o resultado de cada linha assim que fica pronto.
-   * NÃO grava nada — só valida (formato, duplicado, já cadastrado, domínio).
+   * Classifica um lote de linhas do CSV sem gravar nada.
+   *
+   * É o núcleo da validação, extraído para ser chamado em sequência sobre um arquivo
+   * grande: o chamador controla o laço e o que faz com o resultado, então nada além
+   * do lote corrente fica em memória. `ctx` atravessa os lotes porque as duas
+   * estruturas são cumulativas — o cache de DNS evita reconsultar o mesmo domínio, e
+   * `seen` é o que detecta email repetido DENTRO do arquivo.
    */
-  async validateCsvStream(
-    csvContent: string,
-    listIds: string[],
-    emit: (e: ValidateStreamEvent) => void
-  ): Promise<void> {
-    const rows = parseCsv(csvContent);
-    if (!rows.length) throw new BadRequestError('CSV vazio ou sem linhas de dados.');
+  async classifyBatch(rows: CsvRow[], listIds: string[], ctx: ClassifyContext): Promise<ClassifiedRow[]> {
+    const mapped = rows.map((r) => this.mapRow(r));
 
-    emit({ type: 'start', total: rows.length });
+    // Uma query de existência e uma rodada de DNS para o lote inteiro, em vez de
+    // uma por linha. Só emails com formato válido entram na consulta.
+    const lookup = mapped.map((m) => m.email).filter((e) => e && EMAIL_RE.test(e));
+    const [existing] = await Promise.all([this.findExistingByEmail(lookup), this.warmDomainCache(lookup, ctx.mxCache)]);
 
-    const mxCache = new Map<string, boolean>();
-    const seen = new Set<string>();
-    // Prefetch por lote: a existência e o DNS das próximas IMPORT_CHUNK linhas são
-    // resolvidos de uma vez, mas os eventos continuam saindo linha a linha, em ordem.
-    let existingCache = new Map<string, ExistingContact>();
+    const out: ClassifiedRow[] = [];
 
-    for (let i = 0; i < rows.length; i++) {
-      if (i % IMPORT_CHUNK === 0) {
-        const lookahead = rows
-          .slice(i, i + IMPORT_CHUNK)
-          .map((r) => this.mapRow(r).email)
-          .filter((e) => e && EMAIL_RE.test(e));
-        const [found] = await Promise.all([
-          this.findExistingByEmail(lookahead),
-          this.warmDomainCache(lookahead, mxCache),
-        ]);
-        existingCache = found;
-      }
-
-      const fields = this.mapRow(rows[i]);
+    for (const fields of mapped) {
       const email = fields.email;
       let kind: RowKind;
       let reason: string | undefined;
@@ -450,23 +338,25 @@ export class ContactService {
       if (!email || !EMAIL_RE.test(email)) {
         kind = 'invalid';
         reason = 'Formato inválido';
-      } else if (seen.has(email)) {
+      } else if (ctx.seen.has(email)) {
         kind = 'invalid';
         reason = 'Repetido no arquivo';
       } else {
-        seen.add(email);
-        const existing = existingCache.get(email);
+        ctx.seen.add(email);
+        const found = existing.get(email);
 
-        if (existing) {
+        if (found) {
           // Já cadastrado: a classificação depende da lista de destino escolhida.
           if (!listIds.length) {
             kind = 'already';
           } else {
-            const current = new Set(existing.lists.map(String));
-            const toAdd = listIds.filter((l) => !current.has(l));
-            kind = toAdd.length ? 'add-to-list' : 'in-list';
+            const current = new Set(found.lists.map(String));
+            kind = listIds.some((l) => !current.has(l)) ? 'add-to-list' : 'in-list';
           }
-        } else if (!(await domainHasMail(email.split('@')[1], mxCache))) {
+        } else if (!(await domainHasMail(email.split('@')[1] ?? '', ctx.mxCache))) {
+          // O warmDomainCache já resolveu os domínios do lote, então isto é sempre
+          // acerto de cache — mas passa pelo helper para a regra não depender de um
+          // efeito colateral.
           kind = 'invalid';
           reason = 'Domínio inexistente';
         } else {
@@ -474,81 +364,68 @@ export class ContactService {
         }
       }
 
-      emit({
-        type: 'row',
-        index: i,
-        email: email || '(vazio)',
-        name: fields.name,
-        phone: fields.phone,
-        company: fields.company,
-        metadata: fields.metadata,
-        kind,
-        reason,
-      });
+      out.push({ ...fields, email: email || '', kind, reason });
     }
 
-    emit({ type: 'done', total: rows.length });
+    return out;
   }
 
   /**
-   * Importa linhas JÁ validadas (sem refazer DNS). Cria novos e mescla os que já existem
-   * (vincula às listas sem sobrescrever dados).
+   * Grava um lote de linhas JÁ classificadas: cria as novas e vincula as existentes
+   * às listas de destino, sem sobrescrever dados.
+   *
+   * NÃO recalcula o contador das listas — quem processa um arquivo inteiro chama
+   * `syncCounts` uma vez no fim, em vez de uma contagem completa por lote.
    */
-  async importValidated(rows: ValidatedRow[], listIds: string[] = []): Promise<{ imported: number; skipped: number }> {
+  async importRows(rows: ValidatedRow[], listIds: string[] = []): Promise<{ imported: number; skipped: number }> {
+    const valid = rows
+      .map((r) => ({ ...r, email: (r.email || '').toLowerCase().trim() }))
+      .filter((r) => r.email && EMAIL_RE.test(r.email));
+    let skipped = rows.length - valid.length;
+    if (!valid.length) return { imported: 0, skipped };
+
+    const existing = await this.findExistingByEmail(valid.map((r) => r.email));
+    const linkOps: AnyBulkWriteOperation[] = [];
+    const toInsert: NewContactDoc[] = [];
     let imported = 0;
-    let skipped = 0;
 
-    for (const rowChunk of this.chunk(rows, IMPORT_CHUNK)) {
-      const valid = rowChunk
-        .map((r) => ({ ...r, email: (r.email || '').toLowerCase().trim() }))
-        .filter((r) => {
-          if (!r.email || !EMAIL_RE.test(r.email)) {
-            skipped++;
-            return false;
-          }
-          return true;
-        });
-      if (!valid.length) continue;
-
-      const existing = await this.findExistingByEmail(valid.map((r) => r.email));
-      const linkOps: AnyBulkWriteOperation[] = [];
-      const toInsert: NewContactDoc[] = [];
-
-      for (const r of valid) {
-        const found = existing.get(r.email);
-        if (found) {
-          const current = new Set(found.lists.map(String));
-          const toAdd = listIds.filter((l) => !current.has(l));
-          if (toAdd.length) {
-            linkOps.push({
-              updateOne: {
-                filter: { _id: found._id },
-                update: { $addToSet: { lists: { $each: toAdd.map((id) => new Types.ObjectId(id)) } } },
-              },
-            });
-          }
+    for (const r of valid) {
+      const found = existing.get(r.email);
+      if (found) {
+        const current = new Set(found.lists.map(String));
+        const toAdd = listIds.filter((l) => !current.has(l));
+        if (toAdd.length) {
+          linkOps.push({
+            updateOne: {
+              filter: { _id: found._id },
+              update: { $addToSet: { lists: { $each: toAdd.map((id) => new Types.ObjectId(id)) } } },
+            },
+          });
+          imported++; // vinculado à(s) nova(s) lista(s)
+        } else {
           skipped++;
-          continue;
         }
-        toInsert.push({
-          email: r.email,
-          name: r.name ?? '',
-          phone: r.phone ?? '',
-          company: r.company ?? '',
-          lists: listIds,
-          metadata: r.metadata ?? {},
-        });
+        continue;
       }
-
-      await this.linkToLists(linkOps);
-      // Corrida: mesmo email inserido concorrentemente → conta como pulado, sem abortar.
-      const { inserted, duplicates } = await this.insertNew(toInsert);
-      imported += inserted;
-      skipped += duplicates.length;
+      toInsert.push({
+        email: r.email,
+        name: r.name ?? '',
+        phone: r.phone ?? '',
+        company: r.company ?? '',
+        lists: listIds,
+        metadata: r.metadata ?? {},
+      });
     }
 
+    await this.linkToLists(linkOps);
+    // Corrida: mesmo email inserido concorrentemente → conta como pulado, sem abortar.
+    const { inserted, duplicates } = await this.insertNew(toInsert);
+    return { imported: imported + inserted, skipped: skipped + duplicates.length };
+  }
+
+  /** Recalcula o contactCount das listas. Chamar uma vez ao fim de uma importação. */
+  async syncCounts(listIds: (Types.ObjectId | string)[]): Promise<void> {
     await this.syncListCounts(listIds);
-    return { imported, skipped };
   }
 }
 

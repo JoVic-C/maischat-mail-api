@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { body, param, query } from 'express-validator';
 import * as ctrl from '../controllers/contact.controller';
+import * as ctrlImport from '../controllers/contactImport.controller';
+import { uploadCsv } from '../middleware/upload';
 import { EMAIL_NORMALIZE, validate } from '../middleware/validate';
 
 const router = Router();
@@ -67,38 +69,42 @@ router.post('/:id/reactivate', param('id').isMongoId().withMessage('ID inválido
 
 router.delete('/:id', param('id').isMongoId().withMessage('ID inválido.'), validate, ctrl.deleteContact);
 
-router.post(
-  '/import',
-  body('csv').isString().notEmpty().withMessage('Conteúdo CSV obrigatório.'),
-  body('listIds').optional().isArray().withMessage('listIds deve ser um array.'),
-  body('listIds.*').isMongoId().withMessage('ID de lista inválido.'),
+// ── Importação em massa ──
+// O CSV sobe como arquivo e é processado por um worker; a requisição só devolve o id
+// do job. Nenhuma rota daqui carrega linhas de contato no corpo, em nenhum sentido —
+// era isso que limitava o desenho anterior a arquivos de poucos MB.
+router.post('/import', uploadCsv.single('file'), body('listIds').optional(), validate, ctrlImport.startImport);
+
+router.get('/import/open', ctrlImport.listOpenImports);
+
+router.get(
+  '/import/:id',
+  param('id').isMongoId().withMessage('ID de importação inválido.'),
   validate,
-  ctrl.importContacts
+  ctrlImport.getImportStatus
 );
 
 router.post(
-  '/invalid-export',
-  body('rows').isArray().withMessage('Envie as linhas inválidas.'),
-  validate,
-  ctrl.exportInvalidContacts
-);
-
-router.post(
-  '/validate-stream',
-  body('csv').isString().notEmpty().withMessage('Conteúdo CSV obrigatório.'),
+  '/import/:id/confirm',
+  param('id').isMongoId().withMessage('ID de importação inválido.'),
   body('listIds').optional().isArray().withMessage('listIds deve ser um array.'),
   body('listIds.*').isMongoId().withMessage('ID de lista inválido.'),
   validate,
-  ctrl.validateContactsStream
+  ctrlImport.confirmImport
 );
 
 router.post(
-  '/import-validated',
-  body('rows').isArray({ min: 1 }).withMessage('Envie as linhas validadas.'),
-  body('listIds').optional().isArray().withMessage('listIds deve ser um array.'),
-  body('listIds.*').isMongoId().withMessage('ID de lista inválido.'),
+  '/import/:id/cancel',
+  param('id').isMongoId().withMessage('ID de importação inválido.'),
   validate,
-  ctrl.importValidatedContacts
+  ctrlImport.cancelImport
+);
+
+router.get(
+  '/import/:id/invalid',
+  param('id').isMongoId().withMessage('ID de importação inválido.'),
+  validate,
+  ctrlImport.downloadInvalid
 );
 
 export default router;

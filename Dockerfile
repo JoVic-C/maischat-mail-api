@@ -23,9 +23,12 @@ RUN npm ci --omit=dev && npm cache clean --force
 # Artefato compilado + package.json (server.js lê a versão dele)
 COPY --from=build /app/dist ./dist
 
-# Diretório dos uploads criado com dono certo ANTES do volume ser montado —
+# Diretórios de dados criados com dono certo ANTES dos volumes serem montados —
 # o Docker herda esta permissão ao criar o volume nomeado.
-RUN mkdir -p /app/uploads && chown -R node:node /app
+# /app/data/imports guarda os CSVs de importação. Fica FORA de /app/uploads de
+# propósito: uploads é servido como estático sem autenticação, e um CSV desses é a
+# base de contatos de um cliente.
+RUN mkdir -p /app/uploads /app/data/imports && chown -R node:node /app
 
 # Não roda como root: se a aplicação for comprometida, o atacante fica sem
 # privilégio para escrever fora de /app.

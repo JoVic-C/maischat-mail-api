@@ -4,10 +4,13 @@ coverage
 
 # Segredos: nunca entram no contexto de build.
 .env
+.env*
 *.env
 
 # Não são usados pela imagem — só engordam o contexto enviado ao daemon.
 uploads
+# CSVs de importação em processamento: dados de cliente, nunca vão para a imagem.
+data
 *.log
 *.md
 docker-compose*
