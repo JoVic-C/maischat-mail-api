@@ -173,6 +173,9 @@ export class CampaignService {
     campaign.stats.unsubscribed = 0;
     campaign.linkStats.splice(0);
 
+    // Congela o conteúdo AQUI: uma cópia por campanha, lida pelo worker. Antes ela ia
+    // dentro de cada job, o que inviabilizava campanhas de milhões de destinatários.
+    campaign.snapshot = { subject: template.subject, html: template.html };
     campaign.status = 'sending';
     campaign.startedAt = new Date();
     campaign.scheduledAt = null; // se veio de um agendamento, limpa a marca
@@ -286,8 +289,8 @@ export class CampaignService {
       sendLogId: String(logs[i]._id),
       smtpId: smtpIdForJob,
       to: contact.email,
-      subjectTemplate: template.subject,
-      htmlTemplate: template.html,
+      // Sem conteúdo aqui: o worker lê o snapshot da campanha. Só o que varia por
+      // destinatário viaja no job.
       data: {
         name: contact.name,
         email: contact.email,
@@ -295,7 +298,6 @@ export class CampaignService {
         // .lean() devolve metadata como objeto puro — espalha direto.
         ...(contact.metadata ?? {}),
       },
-      attachments,
     }));
 
     await enqueueEmails(jobs);

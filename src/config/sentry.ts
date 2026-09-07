@@ -14,7 +14,17 @@ let enabled = false;
 export function initSentry(): void {
   const dsn = process.env.SENTRY_DSN;
   if (!dsn) {
-    logger.info('ℹ️  Sentry desativado (SENTRY_DSN não definido)');
+    // Em produção isto é um problema operacional, não uma escolha: sem DSN nenhum erro
+    // sai da máquina, e a primeira notícia de uma falha vem do cliente reclamando.
+    // O aviso é forte de propósito — a linha discreta de antes passava batida no boot.
+    if (process.env.NODE_ENV === 'production') {
+      logger.warn(
+        '⚠️  SENTRY_DSN não definido em PRODUÇÃO — nenhum erro será reportado. ' +
+          'Defina a variável no painel para ter rastreamento de falhas.'
+      );
+    } else {
+      logger.info('ℹ️  Sentry desativado (SENTRY_DSN não definido)');
+    }
     return;
   }
 

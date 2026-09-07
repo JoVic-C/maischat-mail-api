@@ -9,9 +9,22 @@ export interface EmailJob {
   sendLogId: string;
   smtpId: string;
   to: string;
-  subjectTemplate: string;
-  htmlTemplate: string;
   data: Record<string, string>;
+
+  /**
+   * Conteúdo do email — LEGADO, e por isso opcional.
+   *
+   * O HTML já viajou dentro de cada job. Numa campanha de milhões de destinatários
+   * isso duplicava o mesmo email milhões de vezes no Redis (dezenas de GB), e o
+   * enfileiramento morria antes de terminar. Hoje o conteúdo vive em UMA cópia, no
+   * `snapshot` da campanha, e o worker o lê de lá.
+   *
+   * Estes campos continuam aqui para os jobs que já estavam na fila quando a mudança
+   * subiu: o worker usa o que vier no job e só busca o snapshot quando não vier. Podem
+   * ser removidos depois que a fila girar por completo.
+   */
+  subjectTemplate?: string;
+  htmlTemplate?: string;
   attachments?: { filename: string; storedName: string }[];
   /** Momento (ms) em que o job encontrou a campanha pausada pela 1ª vez — teto de espera no worker. */
   pausedSince?: number;

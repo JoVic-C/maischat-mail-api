@@ -1,6 +1,6 @@
 import jwt from 'jsonwebtoken';
 import type { Types } from 'mongoose';
-import { BadRequestError, UnauthorizedError } from '../errors';
+import { BadRequestError, ForbiddenError, UnauthorizedError } from '../errors';
 import Tenant from '../models/Tenant';
 import User, { type UserDocument } from '../models/User';
 
@@ -45,12 +45,16 @@ export class AuthService {
     if (!user || !(await user.comparePassword(password))) {
       throw new UnauthorizedError('E-mail ou senha inválidos.');
     }
-    if (!user.isActive) throw new UnauthorizedError('Conta desativada.');
+    // 403 e não 401: a credencial está CERTA — a identidade foi provada e o acesso é
+    // negado por política. É também o que o middleware requireAuth responde para a
+    // mesma condição; os dois divergiam, e o 401 daqui ainda fazia o interceptor do
+    // painel disparar um logout na própria tela de login.
+    if (!user.isActive) throw new ForbiddenError('Conta desativada.');
 
     // Cliente desativado bloqueia o login de todos os usuários dele.
     if (user.tenantId) {
       const tenant = await Tenant.findById(user.tenantId).select('isActive').lean();
-      if (!tenant || !tenant.isActive) throw new UnauthorizedError('Cliente desativado.');
+      if (!tenant || !tenant.isActive) throw new ForbiddenError('Cliente desativado.');
     }
 
     return { token: this.signToken(user._id, user.tokenVersion), user: this.toPublicUser(user) };

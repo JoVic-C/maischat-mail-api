@@ -1,5 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 import campaignService from '../services/campaign.service';
+import campaignReportService from '../services/campaignReport.service';
 import { logCtrlError } from '../utils/logger';
 
 export const getCampaigns = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -119,6 +120,31 @@ export const unscheduleCampaign = async (req: Request, res: Response, next: Next
     res.json({ message: 'Agendamento cancelado.' });
   } catch (err) {
     logCtrlError('campaign.unscheduleCampaign', req, err);
+    next(err);
+  }
+};
+
+/**
+ * Relatório de envios. Sai em .xlsx; use ?format=csv para forçar o outro formato.
+ *
+ * O corpo é escrito em streaming pelo service, então o cabeçalho de resposta já saiu
+ * quando um erro pode aparecer no meio. Por isso o try só cobre o caminho ANTES do
+ * primeiro write; depois disso a única saída honesta é encerrar a conexão, e o cliente
+ * vê um arquivo truncado em vez de um CSV com uma mensagem de erro dentro.
+ */
+export const downloadCampaignReport = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const { status, format } = req.query as Record<string, string | undefined>;
+    await campaignReportService.stream(req.params.id, res, {
+      status: status as never,
+      formato: format as never,
+    });
+  } catch (err) {
+    logCtrlError('campaign.downloadCampaignReport', req, err);
+    if (res.headersSent) {
+      res.end();
+      return;
+    }
     next(err);
   }
 };

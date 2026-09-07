@@ -93,11 +93,49 @@ async function markFailed(campaignId: string, sendLogId: string, reason: string)
   await autoPauseIfTooManyErrors(campaignId);
 }
 
+interface ConteudoCampanha {
+  subject: string;
+  html: string;
+  attachments: { filename: string; storedName: string }[];
+}
+
+/**
+ * Conteúdo já carregado, por campanha.
+ *
+ * O worker consulta a campanha a cada job de qualquer forma (para checar pausa e
+ * exclusão), mas o HTML não pode ser relido milhões de vezes. A chave inclui o
+ * `startedAt`: reiniciar a campanha gera um snapshot novo e invalida o cache sozinho,
+ * sem depender de prazo.
+ */
+const conteudoPorCampanha = new Map<string, ConteudoCampanha>();
+
+/** Poucas campanhas enviam ao mesmo tempo; um teto simples evita crescer sem limite. */
+const MAX_CAMPANHAS_EM_CACHE = 20;
+
+async function carregarConteudo(campaignId: string, versao: string): Promise<ConteudoCampanha | null> {
+  const chave = `${campaignId}:${versao}`;
+  const emCache = conteudoPorCampanha.get(chave);
+  if (emCache) return emCache;
+
+  const doc = await Campaign.findById(campaignId).select('snapshot attachments').lean();
+  if (!doc?.snapshot) return null;
+
+  const conteudo: ConteudoCampanha = {
+    subject: doc.snapshot.subject,
+    html: doc.snapshot.html,
+    attachments: (doc.attachments ?? []).map((a) => ({ filename: a.filename, storedName: a.storedName })),
+  };
+
+  if (conteudoPorCampanha.size >= MAX_CAMPANHAS_EM_CACHE) conteudoPorCampanha.clear();
+  conteudoPorCampanha.set(chave, conteudo);
+  return conteudo;
+}
+
 /** Processa 1 job = envia 1 email e atualiza o SendLog + stats da campanha. */
 async function processEmail(job: Job<EmailJob>, token?: string): Promise<void> {
-  const { campaignId, sendLogId, smtpId, to, subjectTemplate, htmlTemplate, data, attachments } = job.data;
+  const { campaignId, sendLogId, to } = job.data;
 
-  const campaign = await Campaign.findById(campaignId).select('status').lean();
+  const campaign = await Campaign.findById(campaignId).select('status startedAt').lean();
 
   // Campanha excluída enquanto o job esperava na fila: descarta SEM enviar.
   // (a exclusão já drena os pendentes; aqui pegamos os que estavam 'active' na hora).
@@ -148,7 +186,7 @@ async function processEmail(job: Job<EmailJob>, token?: string): Promise<void> {
   }
 
   try {
-    await sendOne(job, token);
+    await sendOne(job, token, String(campaign.startedAt?.getTime() ?? 0));
   } finally {
     // O slot precisa voltar em QUALQUER saída, inclusive erro — senão o cliente trava.
     await releaseTenantSlot(job.data.tenantId, limits?.concurrency, slotId);
@@ -156,8 +194,27 @@ async function processEmail(job: Job<EmailJob>, token?: string): Promise<void> {
 }
 
 /** Envio propriamente dito, já dentro do slot do cliente. */
-async function sendOne(job: Job<EmailJob>, token?: string): Promise<void> {
-  const { campaignId, sendLogId, smtpId, to, subjectTemplate, htmlTemplate, data, attachments } = job.data;
+async function sendOne(job: Job<EmailJob>, token: string | undefined, versaoConteudo: string): Promise<void> {
+  const { campaignId, sendLogId, smtpId, to, data } = job.data;
+
+  // Conteúdo: o job novo não o carrega — vem do snapshot da campanha. Jobs ANTIGOS,
+  // enfileirados antes desta mudança, ainda trazem o HTML dentro deles; usar o que
+  // vier no job evita perder o que já estava na fila no momento do deploy.
+  const conteudo = job.data.htmlTemplate
+    ? {
+        subject: job.data.subjectTemplate ?? '',
+        html: job.data.htmlTemplate,
+        attachments: job.data.attachments ?? [],
+      }
+    : await carregarConteudo(campaignId, versaoConteudo);
+
+  if (!conteudo) {
+    // Sem conteúdo não há o que enviar, e retentar não o faz aparecer. Falha permanente.
+    const motivo = 'Conteúdo da campanha não encontrado (campanha sem snapshot do disparo).';
+    logger.error(`📄 ${motivo} → ${to}`);
+    await markFailed(campaignId, sendLogId, motivo);
+    return;
+  }
 
   // xMailer embutido (id sentinela) ou SMTP do cliente pelo id.
   const smtp = smtpId === FALLBACK_SMTP_ID ? smtpService.getFallbackSmtp() : await SmtpSettings.findById(smtpId);
@@ -187,12 +244,12 @@ async function sendOne(job: Job<EmailJob>, token?: string): Promise<void> {
     const { messageId } = await emailService.send({
       smtp,
       to,
-      subjectTemplate,
-      htmlTemplate,
+      subjectTemplate: conteudo.subject,
+      htmlTemplate: conteudo.html,
       data,
       campaignId,
       sendLogId,
-      attachments,
+      attachments: conteudo.attachments,
     });
 
     // Pós-envio: o email JÁ saiu. Uma falha nas escritas abaixo NÃO pode relançar,
