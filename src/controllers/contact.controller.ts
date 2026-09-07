@@ -1,5 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 import contactService from '../services/contact.service';
+import contactExportService from '../services/contactExport.service';
 import { logCtrlError } from '../utils/logger';
 
 export const getContacts = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -86,6 +87,33 @@ export const bulkDeleteContacts = async (req: Request, res: Response, next: Next
     res.json({ message: `${result.deleted} contato(s) excluído(s).`, ...result });
   } catch (err) {
     logCtrlError('contact.bulkDeleteContacts', req, err);
+    next(err);
+  }
+};
+
+/**
+ * Exporta contatos em CSV, com os mesmos filtros da listagem.
+ *
+ * O corpo é escrito em streaming, então o cabeçalho já saiu quando um erro pode
+ * aparecer no meio. O try cobre o caminho ANTES do primeiro write; depois disso a
+ * única saída honesta é encerrar a conexão — o cliente vê um arquivo truncado em vez
+ * de um CSV com mensagem de erro dentro.
+ */
+export const exportContacts = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const { search, listId, status, delivery } = req.query as Record<string, string | undefined>;
+    await contactExportService.streamCsv(res, {
+      search,
+      listId,
+      status: status as 'active' | 'unsubscribed' | 'bounced' | undefined,
+      delivery: delivery as 'delivered' | 'never' | 'undeliverable' | undefined,
+    });
+  } catch (err) {
+    logCtrlError('contact.exportContacts', req, err);
+    if (res.headersSent) {
+      res.end();
+      return;
+    }
     next(err);
   }
 };

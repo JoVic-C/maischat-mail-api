@@ -29,6 +29,17 @@ router.get(
   ctrl.getContacts
 );
 
+// Declarada ANTES de '/:id': na ordem inversa o Express leria 'export' como um id.
+router.get(
+  '/export',
+  query('search').optional().trim(),
+  query('listId').optional().isMongoId().withMessage('ID de lista inválido.'),
+  query('status').optional().isIn(['active', 'unsubscribed', 'bounced']).withMessage('Status inválido.'),
+  query('delivery').optional().isIn(['delivered', 'never', 'undeliverable']).withMessage('Filtro de entrega inválido.'),
+  validate,
+  ctrl.exportContacts
+);
+
 router.get('/:id', param('id').isMongoId().withMessage('ID inválido.'), validate, ctrl.getContact);
 
 router.post(

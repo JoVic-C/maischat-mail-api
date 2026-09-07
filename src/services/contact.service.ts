@@ -84,6 +84,15 @@ const COLUMN_ALIASES = {
   company: ['company', 'empresa', 'organização', 'organizacao'],
 } as const;
 
+/**
+ * Colunas que a EXPORTAÇÃO gera só para informação e que a importação deve ignorar.
+ *
+ * Sem esta lista, reimportar um arquivo exportado guarda "situacao" e "criado em" como
+ * campos extras do contato — e a exportação seguinte traria essas chaves de novo, agora
+ * duplicando colunas que já existem no cabeçalho. O arquivo sairia malformado.
+ */
+const COLUNAS_INFORMATIVAS = ['situacao', 'situação', 'status', 'criado em', 'criado_em', 'created at'];
+
 interface ExistingContact {
   _id: Types.ObjectId;
   email: string;
@@ -119,7 +128,7 @@ export class ContactService {
       else if (COLUMN_ALIASES.name.includes(header as never)) out.name = value;
       else if (COLUMN_ALIASES.phone.includes(header as never)) out.phone = value;
       else if (COLUMN_ALIASES.company.includes(header as never)) out.company = value;
-      else if (value) out.metadata[header] = value;
+      else if (value && !COLUNAS_INFORMATIVAS.includes(header)) out.metadata[header] = value;
     }
     return out;
   }
