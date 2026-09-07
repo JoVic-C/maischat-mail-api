@@ -52,6 +52,11 @@ sendLogSchema.index({ email: 1, createdAt: -1 });
 sendLogSchema.index({ status: 1, updatedAt: -1 });
 // Gráfico de atividade do dashboard filtra por janela de tempo.
 sendLogSchema.index({ createdAt: -1 });
+// O relatório de envios do dashboard filtra por PERÍODO dentro de UM cliente. Sem o
+// composto, o Mongo usa o índice de createdAt acima e depois descarta os documentos
+// dos outros clientes — varrendo, numa instalação compartilhada, a janela inteira de
+// todo mundo para responder a de um só.
+sendLogSchema.index({ tenantId: 1, createdAt: -1 });
 
 sendLogSchema.plugin(tenantScope);
 

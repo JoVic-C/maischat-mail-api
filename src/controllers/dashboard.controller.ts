@@ -1,5 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 import dashboardService from '../services/dashboard.service';
+import sendReportService, { type Agrupamento } from '../services/sendReport.service';
 import { logCtrlError } from '../utils/logger';
 
 export const getStats = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -12,12 +13,18 @@ export const getStats = async (req: Request, res: Response, next: NextFunction):
   }
 };
 
-export const getActivity = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+/**
+ * Relatório de envios da conta no período.
+ *
+ * Substituiu o antigo `/activity`, que era fixo em 30 dias agrupados por dia: além da
+ * série para o gráfico, devolve os totais e as taxas do recorte pedido.
+ */
+export const getSendReport = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const activity = await dashboardService.getActivity();
-    res.json(activity);
+    const { de, ate, agrupamento } = req.query as Record<string, string | undefined>;
+    res.json(await sendReportService.gerar({ de, ate, agrupamento: agrupamento as Agrupamento | undefined }));
   } catch (err) {
-    logCtrlError('dashboard.getActivity', req, err);
+    logCtrlError('dashboard.getSendReport', req, err);
     next(err);
   }
 };

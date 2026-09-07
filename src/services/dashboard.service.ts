@@ -1,7 +1,6 @@
 import Campaign, { type ICampaign } from '../models/Campaign';
 import Contact from '../models/Contact';
 import List from '../models/List';
-import SendLog from '../models/SendLog';
 
 export interface DashboardStats {
   totalContacts: number;
@@ -12,14 +11,6 @@ export interface DashboardStats {
   openRate: number;
   clickRate: number;
   recentCampaigns: ICampaign[];
-}
-
-export interface ActivityPoint {
-  date: string;
-  sent: number;
-  opened: number;
-  clicked: number;
-  failed: number;
 }
 
 export class DashboardService {
@@ -59,26 +50,6 @@ export class DashboardService {
       clickRate: rate(emailsClicked),
       recentCampaigns,
     };
-  }
-
-  async getActivity(): Promise<ActivityPoint[]> {
-    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-
-    const rows = await SendLog.aggregate<{ _id: string } & Omit<ActivityPoint, 'date'>>([
-      { $match: { createdAt: { $gte: since } } },
-      {
-        $group: {
-          _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
-          sent: { $sum: { $cond: [{ $ne: ['$sentAt', null] }, 1, 0] } },
-          opened: { $sum: { $cond: [{ $ne: ['$openedAt', null] }, 1, 0] } },
-          clicked: { $sum: { $cond: [{ $ne: ['$clickedAt', null] }, 1, 0] } },
-          failed: { $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] } },
-        },
-      },
-      { $sort: { _id: 1 } },
-    ]);
-
-    return rows.map((r) => ({ date: r._id, sent: r.sent, opened: r.opened, clicked: r.clicked, failed: r.failed }));
   }
 }
 
