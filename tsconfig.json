@@ -28,5 +28,7 @@
     "transpileOnly": true
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist"]
+  // Os testes ficam fora do build: sao rodados pelo vitest, que transpila por conta
+  // propria, e nao devem ir para dist/ nem para a imagem de producao.
+  "exclude": ["node_modules", "dist", "src/tests"]
 }

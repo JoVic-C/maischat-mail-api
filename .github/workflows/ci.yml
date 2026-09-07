@@ -36,8 +36,55 @@ jobs:
       - name: Checagem de tipos
         run: npm run typecheck
 
+      - name: Testes de unidade
+        run: npm test
+
       - name: Build
         run: npm run build
+
+  integracao:
+    name: Testes de integração (API)
+    runs-on: ubuntu-latest
+
+    # Sobem Mongo e Redis de verdade: os testes batem na API real, com o plugin de
+    # isolamento por cliente ativo. Um mock aqui esconderia justamente a falha que
+    # esta suíte existe para pegar.
+    services:
+      mongo:
+        image: mongo:7
+        ports: ['27017:27017']
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 })'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Testes de integração
+        run: npm run test:integration
+        env:
+          MONGO_URI_TEST: mongodb://localhost:27017/mailpulse_test
+          REDIS_URL: redis://localhost:6379
+          JWT_SECRET: segredo-de-ci-nao-usar-em-producao
+          ENCRYPTION_KEY: chave-de-ci-nao-usar-em-producao
 
   commits:
     name: Padrão das mensagens de commit
