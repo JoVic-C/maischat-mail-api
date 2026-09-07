@@ -50,6 +50,11 @@ export function cellText(value: unknown): string {
     if ('result' in obj) return cellText(obj.result);
     if (typeof obj.hyperlink === 'string') return obj.hyperlink.replace(/^mailto:/i, '').trim();
     if ('error' in obj) return ''; // célula em #N/A, #VALOR! etc.
+
+    // Formato de célula que não conhecemos. Cair no String(value) devolveria
+    // "[object Object]", que entraria na base como se fosse o nome ou o email da
+    // pessoa. Vazio é honesto: a linha é recusada na validação em vez de importar lixo.
+    return '';
   }
 
   return String(value).trim();

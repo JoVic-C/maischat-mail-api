@@ -26,6 +26,12 @@ export interface ICampaignAttachment {
   size: number;
 }
 
+/** Conteúdo congelado no disparo — ver o comentário do campo `snapshot` no schema. */
+export interface ICampaignSnapshot {
+  subject: string;
+  html: string;
+}
+
 export interface ICampaign {
   /** Cliente dono do registro. Preenchido automaticamente pelo plugin tenantScope. */
   tenantId?: Types.ObjectId;
@@ -38,6 +44,7 @@ export interface ICampaign {
   stats: ICampaignStats;
   linkStats: ILinkStat[];
   attachments: ICampaignAttachment[];
+  snapshot: ICampaignSnapshot | null;
   scheduledAt: Date | null;
   startedAt: Date | null;
   completedAt: Date | null;
@@ -77,6 +84,14 @@ const attachmentSchema = new Schema<ICampaignAttachment>(
   { _id: false }
 );
 
+const snapshotSchema = new Schema<ICampaignSnapshot>(
+  {
+    subject: { type: String, required: true },
+    html: { type: String, required: true },
+  },
+  { _id: false }
+);
+
 const campaignSchema = new Schema<ICampaign>(
   {
     name: { type: String, required: true, trim: true, index: true },
@@ -93,6 +108,18 @@ const campaignSchema = new Schema<ICampaign>(
     stats: { type: statsSchema, default: () => ({}) },
     linkStats: { type: [linkStatSchema], default: [] },
     attachments: { type: [attachmentSchema], default: [] },
+    /**
+     * Cópia do conteúdo no momento do disparo.
+     *
+     * Existe por DOIS motivos. Primeiro, tamanho: antes o HTML ia dentro de cada job da
+     * fila, então uma campanha de milhões de destinatários duplicava o mesmo email
+     * milhões de vezes no Redis. Aqui há UMA cópia por campanha.
+     *
+     * Segundo, imutabilidade: nada impede editar o template enquanto a campanha envia.
+     * Congelar o conteúdo aqui garante que todos recebam o mesmo email — antes essa
+     * garantia vinha, sem querer, da cópia por job.
+     */
+    snapshot: { type: snapshotSchema, default: null },
     scheduledAt: { type: Date, default: null },
     startedAt: { type: Date, default: null },
     completedAt: { type: Date, default: null },

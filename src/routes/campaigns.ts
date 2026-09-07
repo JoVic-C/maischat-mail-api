@@ -38,6 +38,20 @@ router.get(
   ctrl.getCampaignLogs
 );
 
+// Download do relatório de envios. Rota separada da de logs porque devolve arquivo,
+// não JSON paginado — e percorre a campanha inteira, sem teto de página.
+router.get(
+  '/:id/report',
+  param('id').isMongoId().withMessage('ID inválido.'),
+  query('status')
+    .optional()
+    .isIn(['pending', 'sent', 'failed', 'bounced', 'opened', 'clicked', 'unsubscribed'])
+    .withMessage('Status inválido.'),
+  query('format').optional().isIn(['xlsx', 'csv']).withMessage('Formato inválido.'),
+  validate,
+  ctrl.downloadCampaignReport
+);
+
 router.post(
   '/:id/start',
   param('id').isMongoId().withMessage('ID inválido.'),
