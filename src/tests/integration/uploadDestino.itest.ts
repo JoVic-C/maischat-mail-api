@@ -73,3 +73,38 @@ describe('destino do upload indisponível', () => {
     expect(res.body.id).toBeTruthy();
   });
 });
+
+/**
+ * O caso que escapou da primeira correção: o diretório EXISTE, mas não é gravável.
+ *
+ * `ensureImportDir` só criava quando faltava, então nada falhava ali — a exceção vinha
+ * depois, ao gravar o arquivo, como erro genérico. É o cenário do volume que chega
+ * montado com dono diferente do usuário do container.
+ */
+describe('destino existe mas não é gravável', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('avisa que é permissão, em vez de deixar o upload falhar sem explicação', async () => {
+    const a = await criarCliente('Cliente A');
+
+    // Diretório presente...
+    vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+    // ...mas fechado para escrita.
+    vi.spyOn(fs, 'accessSync').mockImplementation(() => {
+      const erro = new Error('EACCES: permission denied') as NodeJS.ErrnoException;
+      erro.code = 'EACCES';
+      throw erro;
+    });
+
+    const res = await request(app)
+      .post('/api/contacts/import')
+      .set(a.auth)
+      .attach('file', Buffer.from('email\nana@exemplo.com\n'), { filename: 'c.csv', contentType: 'text/csv' });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toMatch(/permissão para gravar/i);
+    expect(res.body.error).not.toMatch(/Erro interno/i);
+  });
+});

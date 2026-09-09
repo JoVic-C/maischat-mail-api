@@ -58,6 +58,23 @@ export function runWithTenant<T>(tenantId: Types.ObjectId | string, fn: () => T)
 }
 
 /**
+ * Reexecuta `fn` dentro de um contexto já capturado.
+ *
+ * Existe para atravessar middleware que trabalha por eventos do stream `req` — o
+ * multer, no upload de arquivo. O AsyncLocalStorage prende o contexto ao momento em
+ * que o recurso assíncrono é CRIADO, e o `req` nasce quando a conexão chega, antes de
+ * o tenantContext abrir o escopo. Resultado: quando o upload termina e o callback do
+ * multer dispara, não há cliente ativo, e a primeira query depois disso é recusada
+ * pelo tenantScope — com um erro que parece defeito de servidor.
+ *
+ * Só restaura o que já existia: sem contexto capturado, não inventa nenhum.
+ */
+export function runInContext<T>(ctx: TenantContext | undefined, fn: () => T): T {
+  if (!ctx) return fn();
+  return storage.run(ctx, fn);
+}
+
+/**
  * Executa `fn` SEM escopo de tenant. Reservado para fluxos que não têm um cliente
  * na entrada e cujo controle de acesso é outro (assinatura HMAC, token de webhook,
  * execução manual de script). Nunca use para atender uma rota autenticada.

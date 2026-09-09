@@ -41,6 +41,11 @@ const RETENTION_MS = 48 * 60 * 60 * 1000;
 
 export function ensureImportDir(): void {
   if (!fs.existsSync(IMPORT_DIR)) fs.mkdirSync(IMPORT_DIR, { recursive: true });
+  // Existir não basta. Em container o diretório vem na imagem, mas o volume montado
+  // por cima pode chegar com outro dono — e aí a criação não falha, a GRAVAÇÃO é que
+  // falha, no meio do upload e como erro genérico. Perguntar antes transforma isso
+  // numa mensagem que diz o que aconteceu.
+  fs.accessSync(IMPORT_DIR, fs.constants.W_OK);
 }
 
 /** Escreve respeitando backpressure — sem isto o buffer cresce sem limite num arquivo grande. */

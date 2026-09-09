@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { RequestHandler } from 'express';
 import multer from 'multer';
 
+import { getTenantContext, runInContext } from '../config/tenantContext';
 import { BadRequestError, InternalServerError } from '../errors';
 import { ensureImportDir, IMPORT_DIR } from '../services/contactImport.service';
 import { logSideEffect } from '../utils/logger';
@@ -136,14 +137,26 @@ export const uploadImportFile = multer({
  * planilha IMPORT_MAX_MB. Quando o erro chega ao middleware genérico essa informação
  * já se perdeu, e a mensagem de lá dizia "máx. 5 MB" para os três casos.
  */
-function comLimiteNaMensagem(handler: RequestHandler, limiteMb: number): RequestHandler {
+export function comLimiteNaMensagem(handler: RequestHandler, limiteMb: number): RequestHandler {
   return (req, res, next) => {
+    // Capturado ANTES do multer e restaurado no callback dele.
+    //
+    // O multer é dirigido por eventos do stream `req`, que nasce quando a conexão
+    // chega — antes de o tenantContext abrir o escopo do cliente. Como o
+    // AsyncLocalStorage amarra o contexto ao momento de criação do recurso, o callback
+    // do upload roda SEM cliente ativo, e a primeira query seguinte morre em "Query em
+    // modelo multi-tenant sem contexto ativo". Arquivo pequeno costuma escapar (termina
+    // ainda dentro do escopo); 1,4 MB, não.
+    const contexto = getTenantContext();
+
     handler(req, res, (err: unknown) => {
-      if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
-        next(new BadRequestError(`Arquivo maior que o limite de ${limiteMb} MB.`));
-        return;
-      }
-      next(err);
+      runInContext(contexto, () => {
+        if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+          next(new BadRequestError(`Arquivo maior que o limite de ${limiteMb} MB.`));
+          return;
+        }
+        next(err);
+      });
     });
   };
 }
