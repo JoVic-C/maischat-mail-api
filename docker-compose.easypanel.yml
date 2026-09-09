@@ -48,6 +48,9 @@ services:
       SENTRY_DSN: ${SENTRY_DSN:-}
       XMAILER_SMTP_HOST: ${XMAILER_SMTP_HOST:-}
       XMAILER_SMTP_PORT: ${XMAILER_SMTP_PORT:-587}
+      # Vazia basta: a 465 usa TLS direto e as demais STARTTLS. Só preencha ('true'
+      # ou 'false') para um servidor que fuja dessa convenção.
+      XMAILER_SMTP_SECURE: ${XMAILER_SMTP_SECURE:-}
       XMAILER_SMTP_USER: ${XMAILER_SMTP_USER:-}
       XMAILER_SMTP_PASS: ${XMAILER_SMTP_PASS:-}
       XMAILER_FROM_NAME: ${XMAILER_FROM_NAME:-mMail}
