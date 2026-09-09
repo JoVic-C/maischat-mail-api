@@ -13,6 +13,18 @@ function isMongoDuplicateError(err: unknown): err is MongoDuplicateError {
   return err instanceof Error && (err as { code?: number }).code === 11000;
 }
 
+/**
+ * Id que não é um ObjectId.
+ *
+ * Vem por dois caminhos: `new Types.ObjectId(x)` direto, que lança BSONError, e o cast
+ * automático do Mongoose numa query, que lança CastError. O nome é comparado como
+ * texto para não depender do pacote `bson`, que é dependência transitiva.
+ */
+function isIdMalformado(err: unknown): boolean {
+  if (err instanceof mongoose.Error.CastError) return err.kind === 'ObjectId';
+  return err instanceof Error && err.name === 'BSONError';
+}
+
 /** Códigos do multer traduzidos para o que o usuário pode fazer a respeito. */
 const MENSAGENS_UPLOAD: Record<string, string> = {
   LIMIT_FILE_SIZE: 'Arquivo muito grande.',
@@ -61,6 +73,17 @@ export const errorHandler = (err: unknown, req: Request, res: Response, _next: N
     // o nome do índice do Mongo, que não diz nada a quem preencheu o formulário.
     logWarn('errorHandler.duplicado', campo || 'desconhecido');
     res.status(409).json({ error: nome ? `Já existe um registro com este ${nome}.` : 'Este registro já existe.' });
+    return;
+  }
+
+  if (isIdMalformado(err)) {
+    // Um id que não é ObjectId é erro de quem chamou, não falha do servidor. Sem este
+    // ramo, `new Types.ObjectId('undefined')` — vindo de um campo que o painel não
+    // preencheu — subia como exceção crua e virava 500 "Erro interno.", indistinguível
+    // de um defeito nosso. São nove conversões assim espalhadas pelos serviços; tratar
+    // aqui cobre todas de uma vez.
+    logWarn('errorHandler.idMalformado', (err as Error).message, { method: req.method, path: req.originalUrl });
+    res.status(400).json({ error: 'A requisição trouxe um identificador inválido.', code: 'ID_INVALIDO' });
     return;
   }
 

@@ -63,6 +63,34 @@ describe('mensagens de erro', () => {
     expect(res.body.error).not.toMatch(/tenantId|_1|index/i);
   });
 
+  it('identificador malformado é 400, não 500', async () => {
+    // Um campo que o painel deixou de preencher chega como a string "undefined". O
+    // `new Types.ObjectId()` lançava BSONError, que ninguém tratava, e o resultado era
+    // "Erro interno." — indistinguível de um defeito do servidor. São nove conversões
+    // assim nos serviços; o tratamento é central.
+    const a = await criarCliente('Cliente A');
+    const csv = Buffer.from('email,nome\nana@exemplo.com,Ana\n');
+
+    const res = await request(app)
+      .post('/api/contacts/import')
+      .set(a.auth)
+      .field('listIds', 'undefined')
+      .attach('file', csv, { filename: 'c.csv', contentType: 'text/csv' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('ID_INVALIDO');
+    // Sem devolver o texto do driver ("24 character hex string...").
+    expect(res.body.error).not.toMatch(/hex|Uint8Array|BSON/i);
+  });
+
+  it('vale para qualquer rota, não só a importação', async () => {
+    const a = await criarCliente('Cliente A');
+    const res = await request(app).get('/api/contacts/nao-e-um-id').set(a.auth);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).not.toMatch(/hex|Uint8Array|BSON/i);
+  });
+
   it('arquivo grande demais informa o limite daquele upload, não um número fixo', async () => {
     const a = await criarCliente('Cliente A');
     // O limite de imagem é 5 MB; a mensagem antiga dizia "máx. 5 MB" para todos os

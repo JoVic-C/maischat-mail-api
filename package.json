@@ -40,7 +40,7 @@
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^8.7.0",
     "multer": "^1.4.5-lts.1",
-    "nodemailer": "^9.0.5",
+    "nodemailer": "^9.1.1",
     "rate-limit-redis": "^4.3.1"
   },
   "devDependencies": {
@@ -61,5 +61,8 @@
     "ts-node": "^10.9.2",
     "typescript": "^5.6.0",
     "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "js-yaml": "^4.3.2"
   }
 }
