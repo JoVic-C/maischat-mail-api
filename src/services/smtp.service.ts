@@ -42,11 +42,17 @@ export class SmtpService {
     const user = process.env.XMAILER_SMTP_USER;
     const password = process.env.XMAILER_SMTP_PASS;
     if (!host || !user || !password) return null;
+
+    const port = Number(process.env.XMAILER_SMTP_PORT) || 587;
     return {
-      name: 'xMailer (padrão)',
+      name: 'SMTP da plataforma',
       host,
-      port: Number(process.env.XMAILER_SMTP_PORT) || 587,
-      secure: false,
+      port,
+      // Derivado da porta, e não fixo em false: a 465 é TLS desde o primeiro byte, e
+      // com `secure: false` a conexão era recusada — o `?? porta === 465` do
+      // buildTransporter não salvava, porque `false` não é ausência de valor.
+      // XMAILER_SMTP_SECURE só é necessária em servidor fora da convenção.
+      secure: process.env.XMAILER_SMTP_SECURE ? process.env.XMAILER_SMTP_SECURE === 'true' : port === 465,
       user,
       password,
       fromName: process.env.XMAILER_FROM_NAME || 'mMail',

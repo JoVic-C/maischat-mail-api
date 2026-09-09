@@ -124,6 +124,7 @@ describe('saúde e rotas inexistentes', () => {
 
   it('rota inexistente devolve 404 em JSON, não HTML', async () => {
     const res = await request(app).get('/api/nao-existe').expect(404);
-    expect(res.body.error).toMatch(/não encontrada/i);
+    expect(res.body.error).toMatch(/não encontrado/i);
+    // O que a resposta NÃO pode conter está em mensagensDeErro.itest.ts.
   });
 });

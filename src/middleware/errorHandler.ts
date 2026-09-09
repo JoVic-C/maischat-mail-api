@@ -2,7 +2,7 @@ import type { NextFunction, Request, Response } from 'express';
 import mongoose from 'mongoose';
 import multer from 'multer';
 import { AppError, ValidationError } from '../errors';
-import { logError, logSideEffect } from '../utils/logger';
+import { logError, logSideEffect, logWarn } from '../utils/logger';
 
 interface MongoDuplicateError extends Error {
   code: number;
@@ -12,6 +12,25 @@ interface MongoDuplicateError extends Error {
 function isMongoDuplicateError(err: unknown): err is MongoDuplicateError {
   return err instanceof Error && (err as { code?: number }).code === 11000;
 }
+
+/** Códigos do multer traduzidos para o que o usuário pode fazer a respeito. */
+const MENSAGENS_UPLOAD: Record<string, string> = {
+  LIMIT_FILE_SIZE: 'Arquivo muito grande.',
+  LIMIT_FILE_COUNT: 'Arquivos demais de uma vez.',
+  LIMIT_PART_COUNT: 'Arquivos demais de uma vez.',
+  LIMIT_UNEXPECTED_FILE: 'Envie o arquivo pelo campo correto do formulário.',
+  LIMIT_FIELD_KEY: 'Formulário inválido.',
+  LIMIT_FIELD_VALUE: 'Um dos campos do formulário é grande demais.',
+  LIMIT_FIELD_COUNT: 'Campos demais no formulário.',
+};
+
+/** Campos únicos do banco com nome que faça sentido para quem preencheu o formulário. */
+const NOMES_DE_CAMPO: Record<string, string> = {
+  email: 'e-mail',
+  name: 'nome',
+  slug: 'identificador',
+  token: 'token',
+};
 
 export const errorHandler = (err: unknown, req: Request, res: Response, _next: NextFunction): void => {
   if (err instanceof ValidationError) {
@@ -28,19 +47,27 @@ export const errorHandler = (err: unknown, req: Request, res: Response, _next: N
   }
 
   if (err instanceof multer.MulterError) {
-    const msg = err.code === 'LIMIT_FILE_SIZE' ? 'Imagem muito grande (máx. 5 MB).' : `Erro no upload: ${err.message}`;
-    res.status(400).json({ error: msg });
+    // A mensagem do multer é interna ("Unexpected field", "Too many files") e ia crua
+    // para a tela. Cada código vira uma frase que diz o que fazer.
+    logWarn('errorHandler.upload', err.code, { method: req.method, path: req.originalUrl });
+    res.status(400).json({ error: MENSAGENS_UPLOAD[err.code] ?? 'Não foi possível enviar o arquivo.' });
     return;
   }
 
   if (isMongoDuplicateError(err)) {
-    const field = err.keyValue ? Object.keys(err.keyValue)[0] : 'campo';
-    res.status(409).json({ error: `Valor duplicado para ${field}.` });
+    const campo = err.keyValue ? Object.keys(err.keyValue)[0] : '';
+    const nome = NOMES_DE_CAMPO[campo];
+    // Sem o nome amigável a resposta era "Valor duplicado para tenantId_1_email_1" —
+    // o nome do índice do Mongo, que não diz nada a quem preencheu o formulário.
+    logWarn('errorHandler.duplicado', campo || 'desconhecido');
+    res.status(409).json({ error: nome ? `Já existe um registro com este ${nome}.` : 'Este registro já existe.' });
     return;
   }
 
   if (err instanceof mongoose.Error.ValidationError) {
-    res.status(400).json({ error: 'Dados inválidos.', details: err.message });
+    // O `details` levava a mensagem do Mongoose: inglês e caminhos do schema.
+    logWarn('errorHandler.schema', err.message, { method: req.method, path: req.originalUrl });
+    res.status(400).json({ error: 'Dados inválidos.' });
     return;
   }
 

@@ -31,6 +31,7 @@ import trackingRoutes from './routes/tracking';
 import uploadRoutes from './routes/upload';
 import userRoutes from './routes/users';
 import webhookRoutes from './routes/webhook';
+import { logWarn } from './utils/logger';
 
 const app = express();
 
@@ -112,8 +113,20 @@ app.get('/api/health', (_req: Request, res: Response) => {
   res.status(200).json({ status: 'ok', version: APP_VERSION, timestamp: new Date().toISOString() });
 });
 
+/**
+ * Nenhuma rota casou.
+ *
+ * O caminho pedido vai para o LOG, não para a resposta: quem está olhando a tela não
+ * tem o que fazer com "GET /api/dashboard/sends?de=...&ate=...", e devolver método,
+ * caminho e query string entrega a estrutura interna da API — junto com a entrada do
+ * próprio cliente — a quem quer que tenha chamado.
+ *
+ * Na prática este 404 quase sempre significa painel mais novo que a API, e o `code`
+ * existe para o painel poder dizer isso em vez de repetir uma mensagem genérica.
+ */
 app.use((req: Request, res: Response) => {
-  res.status(404).json({ error: `Rota não encontrada: ${req.method} ${req.originalUrl}` });
+  logWarn('app.rotaInexistente', `${req.method} ${req.originalUrl}`);
+  res.status(404).json({ error: 'Recurso não encontrado.', code: 'ROTA_INEXISTENTE' });
 });
 
 // Captura no Sentry antes do nosso handler (que responde 500 sem vazar stack).

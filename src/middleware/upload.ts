@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { RequestHandler } from 'express';
 import multer from 'multer';
 
 import { BadRequestError } from '../errors';
@@ -97,3 +98,30 @@ export const uploadImportFile = multer({
     cb(new BadRequestError('Envie um arquivo .csv ou .xlsx.'));
   },
 });
+
+/**
+ * Envolve um handler do multer para traduzir o estouro de tamanho.
+ *
+ * O limite só é conhecido aqui: cada upload tem o seu — imagem 5 MB, anexo 10 MB,
+ * planilha IMPORT_MAX_MB. Quando o erro chega ao middleware genérico essa informação
+ * já se perdeu, e a mensagem de lá dizia "máx. 5 MB" para os três casos.
+ */
+function comLimiteNaMensagem(handler: RequestHandler, limiteMb: number): RequestHandler {
+  return (req, res, next) => {
+    handler(req, res, (err: unknown) => {
+      if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+        next(new BadRequestError(`Arquivo maior que o limite de ${limiteMb} MB.`));
+        return;
+      }
+      next(err);
+    });
+  };
+}
+
+/** Handlers prontos para as rotas, já com a mensagem de tamanho certa. */
+export const handleImageUpload = comLimiteNaMensagem(uploadImage.single('image') as unknown as RequestHandler, 5);
+export const handleDocUpload = comLimiteNaMensagem(uploadDoc.single('file') as unknown as RequestHandler, 10);
+export const handleImportUpload = comLimiteNaMensagem(
+  uploadImportFile.single('file') as unknown as RequestHandler,
+  IMPORT_MAX_MB
+);

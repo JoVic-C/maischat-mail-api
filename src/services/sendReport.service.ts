@@ -74,10 +74,11 @@ function zerado(): TotaisEnvio {
   return { registros: 0, enviados: 0, abertos: 0, clicados: 0, falhas: 0, bounces: 0, descadastros: 0 };
 }
 
-function parseData(valor: string | undefined, padrao: Date, campo: string): Date {
+/** O rótulo é o nome que aparece na tela — "de" e "ate" são nomes de parâmetro da API. */
+function parseData(valor: string | undefined, padrao: Date, rotulo: string): Date {
   if (!valor) return padrao;
   const data = new Date(valor);
-  if (Number.isNaN(data.getTime())) throw new BadRequestError(`Data inválida em "${campo}".`);
+  if (Number.isNaN(data.getTime())) throw new BadRequestError(`${rotulo} inválida.`);
   return data;
 }
 
@@ -96,8 +97,8 @@ export class SendReportService {
     }
 
     const agora = new Date();
-    const ate = parseData(filtro.ate, agora, 'ate');
-    const de = parseData(filtro.de, new Date(agora.getTime() - DIAS_PADRAO * 86_400_000), 'de');
+    const ate = parseData(filtro.ate, agora, 'Data final');
+    const de = parseData(filtro.de, new Date(agora.getTime() - DIAS_PADRAO * 86_400_000), 'Data inicial');
 
     if (de > ate) throw new BadRequestError('A data inicial não pode ser maior que a final.');
 

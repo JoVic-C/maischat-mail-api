@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { body, param, query } from 'express-validator';
 import * as ctrl from '../controllers/contact.controller';
 import * as ctrlImport from '../controllers/contactImport.controller';
-import { uploadImportFile } from '../middleware/upload';
+import { handleImportUpload } from '../middleware/upload';
 import { EMAIL_NORMALIZE, validate } from '../middleware/validate';
 
 const router = Router();
@@ -84,7 +84,7 @@ router.delete('/:id', param('id').isMongoId().withMessage('ID inválido.'), vali
 // O CSV sobe como arquivo e é processado por um worker; a requisição só devolve o id
 // do job. Nenhuma rota daqui carrega linhas de contato no corpo, em nenhum sentido —
 // era isso que limitava o desenho anterior a arquivos de poucos MB.
-router.post('/import', uploadImportFile.single('file'), body('listIds').optional(), validate, ctrlImport.startImport);
+router.post('/import', handleImportUpload, body('listIds').optional(), validate, ctrlImport.startImport);
 
 router.get('/import/open', ctrlImport.listOpenImports);
 
