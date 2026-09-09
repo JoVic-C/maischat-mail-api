@@ -4,8 +4,9 @@ import path from 'node:path';
 import type { RequestHandler } from 'express';
 import multer from 'multer';
 
-import { BadRequestError } from '../errors';
+import { BadRequestError, InternalServerError } from '../errors';
 import { ensureImportDir, IMPORT_DIR } from '../services/contactImport.service';
+import { logSideEffect } from '../utils/logger';
 import { isLegacyExcel, isSupportedSheet, sheetExtension } from '../utils/sheetStream';
 
 const UPLOAD_DIR = 'uploads';
@@ -69,10 +70,39 @@ export const uploadDoc = multer({
  */
 const IMPORT_MAX_MB = Number(process.env.IMPORT_MAX_MB || 100);
 
+/**
+ * Traduz uma falha ao preparar o diretório de destino.
+ *
+ * Sem isto a exceção do `mkdirSync` sobe crua e vira um "Erro interno." sem pista
+ * nenhuma — que é o que se vê quando o volume de dados chega ao container com dono
+ * diferente do usuário `node` do Dockerfile, ou quando o disco enche. As duas causas
+ * são de infraestrutura, e a mensagem precisa dizer isso para não mandar o operador
+ * procurar defeito no arquivo enviado.
+ */
+function erroDeDestino(err: unknown, destino: string): Error {
+  const codigo = (err as NodeJS.ErrnoException)?.code;
+  logSideEffect('upload.destinoIndisponivel', err, { destino, codigo: codigo ?? 'desconhecido' });
+
+  if (codigo === 'EACCES' || codigo === 'EPERM') {
+    return new InternalServerError(
+      'O servidor não tem permissão para gravar o arquivo. Avise o suporte.',
+      'DESTINO_SEM_PERMISSAO'
+    );
+  }
+  if (codigo === 'ENOSPC') {
+    return new InternalServerError('Sem espaço em disco no servidor. Avise o suporte.', 'DISCO_CHEIO');
+  }
+  return new InternalServerError('Não foi possível preparar o envio do arquivo no servidor.', 'DESTINO_INDISPONIVEL');
+}
+
 const importStorage = multer.diskStorage({
   destination: (_req, _file, cb) => {
-    ensureImportDir();
-    cb(null, IMPORT_DIR);
+    try {
+      ensureImportDir();
+      cb(null, IMPORT_DIR);
+    } catch (err) {
+      cb(erroDeDestino(err, IMPORT_DIR), '');
+    }
   },
   // A extensão é PRESERVADA de propósito: é por ela que o worker decide entre o
   // leitor de CSV e o de planilha. Forçar `.csv` aqui faria um .xlsx ser lido como
