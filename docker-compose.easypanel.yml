@@ -28,7 +28,7 @@ services:
       PUBLIC_API_URL: ${PUBLIC_API_URL:?defina a URL pública da API}
       FRONTEND_URL: ${FRONTEND_URL:?defina a URL pública do painel}
 
-      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      SESSION_IDLE_HOURS: ${SESSION_IDLE_HOURS:-24}
       SENTRY_DSN: ${SENTRY_DSN:-}
       XMAILER_SMTP_HOST: ${XMAILER_SMTP_HOST:-}
       XMAILER_SMTP_PORT: ${XMAILER_SMTP_PORT:-587}

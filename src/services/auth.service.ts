@@ -21,13 +21,26 @@ export interface AuthResult {
 export interface JwtPayload {
   id: string;
   v: number;
+  iat?: number;
+}
+
+/** Renova no máximo a cada 15 min: o prazo de inatividade vale a partir do último uso. */
+const RENEW_AFTER_SECONDS = 15 * 60;
+
+export function sessionIdleSeconds(): number {
+  const hours = Number(process.env.SESSION_IDLE_HOURS);
+  return (Number.isFinite(hours) && hours > 0 ? hours : 24) * 3600;
 }
 
 export class AuthService {
   signToken(id: Types.ObjectId | string, tokenVersion: number): string {
     return jwt.sign({ id: String(id), v: tokenVersion }, process.env.JWT_SECRET as string, {
-      expiresIn: (process.env.JWT_EXPIRES_IN || '7d') as jwt.SignOptions['expiresIn'],
+      expiresIn: sessionIdleSeconds(),
     });
+  }
+
+  shouldRenew(payload: JwtPayload): boolean {
+    return typeof payload.iat === 'number' && Date.now() / 1000 - payload.iat >= RENEW_AFTER_SECONDS;
   }
 
   toPublicUser(user: UserDocument): PublicUser {

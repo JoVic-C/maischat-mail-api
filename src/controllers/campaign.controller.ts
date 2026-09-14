@@ -85,7 +85,6 @@ export const getCampaignLogs = async (req: Request, res: Response, next: NextFun
     res.set('X-Total-Count', String(result.total));
     res.set('X-Page', String(result.page));
     res.set('X-Page-Size', String(result.limit));
-    res.set('Access-Control-Expose-Headers', 'X-Total-Count, X-Page, X-Page-Size');
     res.json(result.logs);
   } catch (err) {
     logCtrlError('campaign.getCampaignLogs', req, err);

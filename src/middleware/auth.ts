@@ -1,8 +1,9 @@
 import type { RequestHandler } from 'express';
 import jwt from 'jsonwebtoken';
 import User from '../models/User';
+import authService, { type JwtPayload } from '../services/auth.service';
 
-import type { JwtPayload } from '../services/auth.service';
+export const SESSION_TOKEN_HEADER = 'X-Session-Token';
 
 export const requireAuth: RequestHandler = async (req, res, next) => {
   try {
@@ -26,6 +27,10 @@ export const requireAuth: RequestHandler = async (req, res, next) => {
     if ((decoded.v ?? 0) !== user.tokenVersion) {
       res.status(401).json({ error: 'Sessão expirada. Faça login novamente.' });
       return;
+    }
+
+    if (authService.shouldRenew(decoded)) {
+      res.set(SESSION_TOKEN_HEADER, authService.signToken(user._id, user.tokenVersion));
     }
 
     req.user = user;

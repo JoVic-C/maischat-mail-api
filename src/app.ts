@@ -7,7 +7,7 @@ import express, { type Request, type Response } from 'express';
 import helmet from 'helmet';
 import { version as APP_VERSION } from '../package.json';
 import { Sentry } from './config/sentry';
-import { requireAdmin, requireAuth, requireSuperadmin } from './middleware/auth';
+import { requireAdmin, requireAuth, requireSuperadmin, SESSION_TOKEN_HEADER } from './middleware/auth';
 import { errorHandler } from './middleware/errorHandler';
 import { generalLimiter } from './middleware/rateLimit';
 import { systemContext, tenantContext } from './middleware/tenant';
@@ -67,6 +67,7 @@ app.use(
       cb(null, false);
     },
     credentials: true,
+    exposedHeaders: [SESSION_TOKEN_HEADER, 'X-Total-Count', 'X-Page', 'X-Page-Size'],
   })
 );
 app.use(generalLimiter);
