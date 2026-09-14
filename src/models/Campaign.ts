@@ -13,34 +13,35 @@ export interface ICampaignStats {
   unsubscribed: number;
 }
 
-/** Cliques agregados por URL do email (ranking de links). */
 export interface ILinkStat {
   url: string;
   clicks: number;
 }
 
-/** Anexo da campanha (enviado junto com cada email). */
 export interface ICampaignAttachment {
-  filename: string; // nome original (o destinatário vê este)
-  storedName: string; // nome no disco (uploads/)
+  /** Nome que o destinatário vê. */
+  filename: string;
+  /** Nome do arquivo em uploads/. */
+  storedName: string;
   size: number;
 }
 
-/** Conteúdo congelado no disparo — ver o comentário do campo `snapshot` no schema. */
 export interface ICampaignSnapshot {
   subject: string;
   html: string;
 }
 
 export interface ICampaign {
-  /** Cliente dono do registro. Preenchido automaticamente pelo plugin tenantScope. */
+  /** Preenchido pelo plugin tenantScope. */
   tenantId?: Types.ObjectId;
   name: string;
   templateId: Types.ObjectId;
   listIds: Types.ObjectId[];
   smtpId: Types.ObjectId | null;
-  segmentId: Types.ObjectId | null; // filtro opcional de destinatários
+  segmentId: Types.ObjectId | null;
   status: CampaignStatus;
+  /** Por que a campanha parou sozinha; nulo quando foi pausada pelo usuário. */
+  pauseReason: string | null;
   stats: ICampaignStats;
   linkStats: ILinkStat[];
   attachments: ICampaignAttachment[];
@@ -105,19 +106,13 @@ const campaignSchema = new Schema<ICampaign>(
       default: 'draft',
       index: true,
     },
+    pauseReason: { type: String, default: null },
     stats: { type: statsSchema, default: () => ({}) },
     linkStats: { type: [linkStatSchema], default: [] },
     attachments: { type: [attachmentSchema], default: [] },
     /**
-     * Cópia do conteúdo no momento do disparo.
-     *
-     * Existe por DOIS motivos. Primeiro, tamanho: antes o HTML ia dentro de cada job da
-     * fila, então uma campanha de milhões de destinatários duplicava o mesmo email
-     * milhões de vezes no Redis. Aqui há UMA cópia por campanha.
-     *
-     * Segundo, imutabilidade: nada impede editar o template enquanto a campanha envia.
-     * Congelar o conteúdo aqui garante que todos recebam o mesmo email — antes essa
-     * garantia vinha, sem querer, da cópia por job.
+     * Conteúdo congelado no disparo: uma cópia por campanha em vez de uma por job na
+     * fila, e editar o template durante o envio não altera os emails desta campanha.
      */
     snapshot: { type: snapshotSchema, default: null },
     scheduledAt: { type: Date, default: null },

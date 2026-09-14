@@ -18,9 +18,8 @@ import { reserveSmtpQuota } from './smtpQuota';
 import { acquireTenantSlot, releaseTenantSlot, reserveTenantRate } from './tenantQuota';
 
 /**
- * Marca a campanha como 'completed' quando TODOS os envios terminaram (sent + failed >= total).
- * Atômico e à prova de corrida: o $expr compara os campos no próprio banco e a condição
- * status:'sending' garante que só UM worker (o último a terminar) faça a transição.
+ * Marca a campanha como concluída quando todos os envios terminaram. O filtro por
+ * status 'sending' faz com que só um worker execute a transição.
  */
 async function finalizeIfDone(campaignId: string): Promise<void> {
   const res = await Campaign.updateOne(
@@ -34,16 +33,12 @@ async function finalizeIfDone(campaignId: string): Promise<void> {
   if (res.modifiedCount > 0) logger.info(`🏁 Campaign ${campaignId} completed`);
 }
 
-/** Erro de SMTP com código permanente 5xx = hard bounce (não adianta retentar). */
 function isHardBounce(err: unknown): boolean {
   const code = (err as { responseCode?: number })?.responseCode;
   return typeof code === 'number' && code >= 500 && code < 600;
 }
 
-/**
- * Falha de autenticação/config do SMTP (ex.: 535 Invalid login). É problema do REMETENTE,
- * não do destinatário — NÃO pode marcar o contato como bounce.
- */
+/** Falha de login no SMTP é do remetente: não pode marcar o contato como bounce. */
 function isAuthError(err: unknown): boolean {
   const code = (err as { responseCode?: number })?.responseCode;
   const msg = ((err as Error)?.message || '').toLowerCase();
@@ -57,7 +52,6 @@ function isAuthError(err: unknown): boolean {
   );
 }
 
-/** Limite de erros (falhas + bounces) antes de auto-pausar a campanha (estilo Listmonk). */
 const MAX_ERRORS = Number(process.env.CAMPAIGN_MAX_ERRORS) || 100;
 
 async function autoPauseIfTooManyErrors(campaignId: string): Promise<void> {
@@ -67,25 +61,39 @@ async function autoPauseIfTooManyErrors(campaignId: string): Promise<void> {
       status: 'sending',
       $expr: { $gte: [{ $add: ['$stats.failed', '$stats.bounced'] }, MAX_ERRORS] },
     },
-    { status: 'paused' }
+    { status: 'paused', pauseReason: `Pausada automaticamente: ${MAX_ERRORS} envios com erro.` }
   );
   if (res.modifiedCount > 0) {
     logger.warn(`⏸  Campaign ${campaignId} AUTO-PAUSED: errors exceeded ${MAX_ERRORS} (SMTP issue?)`);
   }
 }
 
-/** Quanto tempo adiar um job cuja campanha está pausada, antes de checar de novo.
- *  Também é a latência máxima do "retomar" (o job adiado espera este intervalo). */
+/**
+ * Pausa na primeira falha de login: se falhou para um destinatário, vai falhar para
+ * todos. O filtro por status 'sending' torna a chamada idempotente entre envios
+ * simultâneos.
+ */
+async function pauseForSmtpAuth(campaignId: string, detail: string): Promise<void> {
+  const res = await Campaign.updateOne(
+    { _id: campaignId, status: 'sending' },
+    {
+      status: 'paused',
+      pauseReason: 'Falha de login no servidor SMTP. Corrija usuário e senha na tela de SMTP e retome a campanha.',
+    }
+  );
+  if (res.modifiedCount > 0) {
+    logger.warn(`⏸  Campaign ${campaignId} PAUSED on SMTP auth failure: ${detail}`);
+  }
+}
+
+/** Intervalo de recheck de um job em campanha pausada; é também a latência do "retomar". */
 const PAUSE_RECHECK_MS = 4000;
 
-/** Espera antes de tentar de novo quando o cliente está com todos os slots ocupados. */
 const SLOT_RECHECK_MS = 2000;
 
-/** Teto de espera de um job numa campanha pausada. Sem ele, uma campanha auto-pausada e
- *  nunca retomada mantém milhares de jobs reciclando no Redis indefinidamente. */
+/** Sem teto, uma campanha pausada e nunca retomada deixaria jobs reciclando no Redis. */
 const MAX_PAUSE_WAIT_MS = Number(process.env.CAMPAIGN_MAX_PAUSE_WAIT_MS) || 24 * 60 * 60 * 1000;
 
-/** Falha definitiva de um envio (sem retry): marca o log e atualiza as métricas da campanha. */
 async function markFailed(campaignId: string, sendLogId: string, reason: string): Promise<void> {
   await SendLog.updateOne({ _id: sendLogId }, { status: 'failed', error: reason });
   await Campaign.updateOne({ _id: campaignId }, { $inc: { 'stats.failed': 1 } });
@@ -100,16 +108,11 @@ interface ConteudoCampanha {
 }
 
 /**
- * Conteúdo já carregado, por campanha.
- *
- * O worker consulta a campanha a cada job de qualquer forma (para checar pausa e
- * exclusão), mas o HTML não pode ser relido milhões de vezes. A chave inclui o
- * `startedAt`: reiniciar a campanha gera um snapshot novo e invalida o cache sozinho,
- * sem depender de prazo.
+ * Cache do conteúdo por campanha, para não reler o HTML a cada envio. A chave inclui o
+ * `startedAt`: reiniciar a campanha gera snapshot novo e invalida a entrada.
  */
 const conteudoPorCampanha = new Map<string, ConteudoCampanha>();
 
-/** Poucas campanhas enviam ao mesmo tempo; um teto simples evita crescer sem limite. */
 const MAX_CAMPANHAS_EM_CACHE = 20;
 
 async function carregarConteudo(campaignId: string, versao: string): Promise<ConteudoCampanha | null> {
@@ -131,24 +134,20 @@ async function carregarConteudo(campaignId: string, versao: string): Promise<Con
   return conteudo;
 }
 
-/** Processa 1 job = envia 1 email e atualiza o SendLog + stats da campanha. */
 async function processEmail(job: Job<EmailJob>, token?: string): Promise<void> {
   const { campaignId, sendLogId, to } = job.data;
 
   const campaign = await Campaign.findById(campaignId).select('status startedAt').lean();
 
-  // Campanha excluída enquanto o job esperava na fila: descarta SEM enviar.
-  // (a exclusão já drena os pendentes; aqui pegamos os que estavam 'active' na hora).
+  // A exclusão drena os jobs pendentes; aqui chegam os que já estavam ativos.
   if (!campaign) {
     logger.warn(`🗑  Envio descartado: campanha ${campaignId} não existe mais → ${to}`);
     return;
   }
 
-  // Campanha pausada? Adia o job (sem enviar) e checa de novo em PAUSE_RECHECK_MS. Não conta como falha.
   if (campaign.status === 'paused') {
     const pausedSince = job.data.pausedSince ?? Date.now();
 
-    // Teto de espera: pausa que nunca é retomada encerra o envio em vez de reciclar para sempre.
     if (Date.now() - pausedSince >= MAX_PAUSE_WAIT_MS) {
       const hours = Math.round(MAX_PAUSE_WAIT_MS / 3_600_000);
       logger.warn(`⌛ Envio abandonado: campanha ${campaignId} pausada há mais de ${hours}h → ${to}`);
@@ -161,14 +160,12 @@ async function processEmail(job: Job<EmailJob>, token?: string): Promise<void> {
     throw new DelayedError();
   }
 
-  // Campanha retomada: limpa a marca para que uma pausa futura conte o tempo do zero.
+  // Limpa a marca para que uma pausa futura conte o tempo do zero.
   if (job.data.pausedSince !== undefined) {
     await job.updateData({ ...job.data, pausedSince: undefined });
   }
 
-  // ── Fatia de capacidade deste cliente (definida pelo superadmin) ──
-  // Não é capacidade extra: reparte a piscina do motor entre os clientes, para um
-  // disparo grande não monopolizar a fila dos demais.
+  // Reparte a capacidade do motor entre clientes, para um disparo grande não monopolizar a fila.
   const limits = (await Tenant.findById(job.data.tenantId).select('sendingLimits').lean())?.sendingLimits;
 
   const rate = await reserveTenantRate(job.data.tenantId, limits?.ratePerMinute);
@@ -180,7 +177,6 @@ async function processEmail(job: Job<EmailJob>, token?: string): Promise<void> {
   const slotId = String(job.id ?? `${campaignId}-${sendLogId}`);
   const gotSlot = await acquireTenantSlot(job.data.tenantId, limits?.concurrency, slotId);
   if (!gotSlot) {
-    // Cliente no teto de simultâneos: volta para a fila sem consumir tentativa.
     await job.moveToDelayed(Date.now() + SLOT_RECHECK_MS, token);
     throw new DelayedError();
   }
@@ -188,18 +184,14 @@ async function processEmail(job: Job<EmailJob>, token?: string): Promise<void> {
   try {
     await sendOne(job, token, String(campaign.startedAt?.getTime() ?? 0));
   } finally {
-    // O slot precisa voltar em QUALQUER saída, inclusive erro — senão o cliente trava.
     await releaseTenantSlot(job.data.tenantId, limits?.concurrency, slotId);
   }
 }
 
-/** Envio propriamente dito, já dentro do slot do cliente. */
 async function sendOne(job: Job<EmailJob>, token: string | undefined, versaoConteudo: string): Promise<void> {
   const { campaignId, sendLogId, smtpId, to, data } = job.data;
 
-  // Conteúdo: o job novo não o carrega — vem do snapshot da campanha. Jobs ANTIGOS,
-  // enfileirados antes desta mudança, ainda trazem o HTML dentro deles; usar o que
-  // vier no job evita perder o que já estava na fila no momento do deploy.
+  // Jobs antigos ainda trazem o HTML no payload; os novos leem do snapshot da campanha.
   const conteudo = job.data.htmlTemplate
     ? {
         subject: job.data.subjectTemplate ?? '',
@@ -209,19 +201,15 @@ async function sendOne(job: Job<EmailJob>, token: string | undefined, versaoCont
     : await carregarConteudo(campaignId, versaoConteudo);
 
   if (!conteudo) {
-    // Sem conteúdo não há o que enviar, e retentar não o faz aparecer. Falha permanente.
     const motivo = 'Conteúdo da campanha não encontrado (campanha sem snapshot do disparo).';
     logger.error(`📄 ${motivo} → ${to}`);
     await markFailed(campaignId, sendLogId, motivo);
     return;
   }
 
-  // xMailer embutido (id sentinela) ou SMTP do cliente pelo id.
   const smtp = smtpId === FALLBACK_SMTP_ID ? smtpService.getFallbackSmtp() : await SmtpSettings.findById(smtpId);
 
-  // SMTP apagado depois que a campanha foi enfileirada. É erro PERMANENTE de
-  // configuração: retentar não faz o servidor voltar a existir. Marca a falha na hora,
-  // em vez de gastar as 3 tentativas e só então registrar.
+  // SMTP excluído após o disparo: retentar não resolve, então falha na hora.
   if (!smtp) {
     const motivo = `Servidor SMTP não encontrado (${smtpId}) — foi excluído depois do disparo?`;
     logger.error(`🔌 ${motivo} → ${to}`);
@@ -229,8 +217,7 @@ async function sendOne(job: Job<EmailJob>, token: string | undefined, versaoCont
     return;
   }
 
-  // Cota do servidor SMTP (dailyLimit/hourlyLimit). Estourou? Adia até a janela virar —
-  // não é falha do envio, então não conta como erro nem consome tentativa.
+  // Cota estourada não é falha do envio: adia sem consumir tentativa.
   const quota = await reserveSmtpQuota(smtpId, smtp.dailyLimit, smtp.hourlyLimit);
   if (!quota.ok) {
     logger.info(
@@ -252,8 +239,7 @@ async function sendOne(job: Job<EmailJob>, token: string | undefined, versaoCont
       attachments: conteudo.attachments,
     });
 
-    // Pós-envio: o email JÁ saiu. Uma falha nas escritas abaixo NÃO pode relançar,
-    // senão o BullMQ retentaria e REENVIARIA o email (duplicado). Isolamos num try próprio.
+    // O email já saiu: relançar aqui faria o BullMQ retentar e enviar em duplicidade.
     try {
       await SendLog.updateOne(
         { _id: sendLogId },
@@ -265,7 +251,7 @@ async function sendOne(job: Job<EmailJob>, token: string | undefined, versaoCont
         }
       );
       await Campaign.updateOne({ _id: campaignId }, { $inc: { 'stats.sent': 1 } });
-      await Contact.updateOne({ email: to }, { lastDeliveredAt: new Date() }); // marca "recebeu" no contato
+      await Contact.updateOne({ email: to }, { lastDeliveredAt: new Date() });
       await finalizeIfDone(campaignId);
       logger.info(`✉️  Sent in campaign ${campaignId} → ${to}`);
     } catch (bookErr) {
@@ -274,24 +260,23 @@ async function sendOne(job: Job<EmailJob>, token: string | undefined, versaoCont
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
 
-    // Falha de autenticação/config do SMTP: problema do remetente, não do destinatário.
-    // Marca o envio como 'failed' (SEM bouncar o contato) e deixa o auto-pause agir.
+    // Pausa a campanha e devolve este envio à fila sem gastá-lo; sai ao retomar.
     if (isAuthError(err)) {
       logger.error(`🔒 SMTP auth/config failure in campaign ${campaignId} → ${to}: ${detail}`);
-      await markFailed(campaignId, sendLogId, detail);
-      return;
+      await pauseForSmtpAuth(campaignId, detail);
+      await job.moveToDelayed(Date.now() + PAUSE_RECHECK_MS, token);
+      throw new DelayedError();
     }
 
-    // Hard bounce (5xx): permanente — marca bounce e NÃO relança (sem retry).
     if (isHardBounce(err)) {
       logger.warn(`✗ Bounce in campaign ${campaignId} → ${to}: ${detail}`);
-      await bounceService.processBounce(to, campaignId, detail); // guarda o erro SMTP real
+      await bounceService.processBounce(to, campaignId, detail);
       await finalizeIfDone(campaignId);
       await autoPauseIfTooManyErrors(campaignId);
       return;
     }
     logger.warn(`↻ Transient error in campaign ${campaignId} → ${to} (attempt ${job.attemptsMade + 1}): ${detail}`);
-    throw err; // erro transitório (4xx/rede): relança para o BullMQ retentar
+    throw err;
   }
 }
 
@@ -305,18 +290,13 @@ export async function stopEmailWorker(): Promise<void> {
 }
 
 let worker: Worker<EmailJob> | null = null;
-/** Recarga em andamento — evita que dois avisos simultâneos recriem o worker duas vezes. */
 let reloading: Promise<void> | null = null;
 
 function createWorker(settings: EngineSettings): Worker<EmailJob> {
   const created = new Worker<EmailJob>(
     EMAIL_QUEUE_NAME,
-    // Todo o processamento roda DENTRO do escopo do cliente dono da campanha —
-    // o worker não tem requisição, então o contexto é reaberto a partir do job.
     (job, token) => {
-      // Job sem cliente não pode ser processado: abrir escopo com tenantId indefinido
-      // faria toda escrita filtrar por `tenantId: undefined` e falhar em silêncio.
-      // Acontece com jobs enfileirados antes do multi-cliente, que ficam parados na fila.
+      // Sem tenantId toda escrita filtraria por `undefined` e falharia em silêncio.
       if (!job.data.tenantId) {
         logger.warn(`🗑  Job ${job.id} descartado: sem tenantId (formato anterior ao multi-cliente).`);
         return Promise.resolve();
@@ -325,24 +305,18 @@ function createWorker(settings: EngineSettings): Worker<EmailJob> {
     },
     {
       connection: redisConnection,
-      // Ambos vêm da tela do superadmin (models/PlatformSettings), não mais do código.
       concurrency: settings.workerConcurrency,
-      // Janela de 1 minuto: é a unidade que o superadmin configura e a que os provedores
-      // publicam. O pico dentro da janela é contido pela concorrência acima.
       limiter: { max: settings.ratePerMinute, duration: 60_000 },
     }
   );
 
   created.on('failed', async (job, err) => {
     if (!job) return;
-    // Sem cliente não há como escopar a escrita — só registra e sai, em vez de
-    // gravar em lugar nenhum e o painel mostrar falha na fila que nunca vira falha no log.
     if (!job.data.tenantId) {
       logger.warn(`⚠️  Falha em job sem tenantId (${job.id}): ${err.message}`);
       return;
     }
     try {
-      // Também precisa de escopo: aqui há escrita em SendLog/Campaign.
       await runWithTenant(job.data.tenantId, async () => {
         if (job.attemptsMade >= (job.opts.attempts ?? 1)) {
           logger.error(
@@ -370,7 +344,6 @@ export async function startEmailWorker(): Promise<Worker<EmailJob>> {
   const settings = await platformSettingsService.getEngineSettings();
   worker = createWorker(settings);
 
-  // Mudança feita em QUALQUER instância chega aqui e recria este worker.
   await subscribeSettingsChanged(() => reloadEmailWorker());
 
   logger.info(`🟢 Email worker started (concorrência ${settings.workerConcurrency}, ${settings.ratePerMinute}/min)`);
@@ -378,13 +351,9 @@ export async function startEmailWorker(): Promise<Worker<EmailJob>> {
 }
 
 /**
- * Recria o worker com os ajustes atuais.
- *
- * O `limiter` do BullMQ é fixado na construção — não há como mudar a taxa em um worker
- * vivo. O worker antigo é fechado ANTES de o novo subir: com os dois no ar, as taxas se
- * somariam e o teto configurado seria furado justamente no momento da mudança.
- * `close()` sem força espera os envios ativos terminarem, então nenhum email se perde;
- * o custo é uma pausa curta em que a fila não avança.
+ * Recria o worker com os ajustes atuais: o `limiter` do BullMQ é fixado na construção.
+ * O antigo fecha antes de o novo subir, senão as taxas se somariam durante a troca;
+ * `close()` espera os envios ativos, então nenhum email se perde.
  */
 export async function reloadEmailWorker(): Promise<void> {
   if (reloading) return reloading;
