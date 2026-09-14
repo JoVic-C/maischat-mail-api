@@ -5,15 +5,9 @@ const APP_NAME = process.env.APP_NAME || 'mmail-api';
 type Meta = Record<string, unknown>;
 
 /**
- * Escreve direto nos streams em vez de `console.*`.
- *
- * O motivo é concreto: a regra `noConsole` do Biome tem correção automática que
- * REMOVE a chamada de console — e uma passagem de `--write --unsafe` já apagou o
- * console.log daqui uma vez, deixando a aplicação inteira sem log em silêncio.
- * `process.stdout` não é alcançado por essa regra.
- *
- * Erro vai para stderr (convenção do Unix): agregadores de log separam os dois,
- * e um container que só escreve em stdout esconde falha no meio do fluxo normal.
+ * Escreve nos streams em vez de usar `console.*`: a correção automática da regra
+ * `noConsole` do Biome remove chamadas de console, e já apagou o log da aplicação uma vez.
+ * Erro vai para stderr.
  */
 function line(level: string, message: string, meta?: Meta): void {
   const ts = new Date().toISOString();
@@ -30,7 +24,6 @@ export const logger = {
   error: (message: string, meta?: Meta) => line('error', message, meta),
 };
 
-/** Erro dentro de um controller — inclui contexto da requisição. */
 export function logCtrlError(scope: string, req: Request, err: unknown): void {
   logger.error(`${scope} failed`, {
     method: req.method,
@@ -39,12 +32,11 @@ export function logCtrlError(scope: string, req: Request, err: unknown): void {
   });
 }
 
-/** Erro genérico com contexto opcional. */
 export function logError(scope: string, err: unknown, ctx?: Meta): void {
   logger.error(`${scope} failed`, { ...ctx, message: err instanceof Error ? err.message : String(err) });
 }
 
-/** Efeito colateral que falhou mas não deve derrubar o fluxo (ex.: envio de email). */
+/** Falha que não deve interromper o fluxo principal (ex.: envio de email). */
 export function logSideEffect(scope: string, err: unknown, ctx?: Meta): void {
   logger.warn(`${scope} (side-effect) failed`, { ...ctx, message: err instanceof Error ? err.message : String(err) });
 }

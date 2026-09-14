@@ -13,7 +13,6 @@ export async function connectDB(): Promise<void> {
     const conn = await mongoose.connect(getMongoUri());
     logger.info(`🟢 MongoDB connected: ${conn.connection.host}/${conn.connection.name}`);
 
-    // Diagnóstico do isolamento por cliente. Só avisa — nunca impede a subida.
     await verifyTenantIndexes();
   } catch (err) {
     logSideEffect('db.connect', err);

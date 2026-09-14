@@ -5,8 +5,7 @@ import { EMAIL_NORMALIZE, validate } from '../middleware/validate';
 
 const router = Router();
 
-// Administração da plataforma — o server.ts já exige requireSuperadmin.
-// Estas rotas NÃO passam pelo tenantContext: elas operam acima dos clientes.
+// Acima dos clientes: sem tenantContext.
 
 router.get('/', ctrl.getTenants);
 
@@ -18,7 +17,6 @@ router.post(
     .matches(/^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$/)
     .withMessage('Identificador deve ter 3-40 caracteres: letras minúsculas, números e hífen.'),
   body('adminEmail').isEmail().withMessage('E-mail do admin inválido.').normalizeEmail(EMAIL_NORMALIZE),
-  // Opcional: sem senha, o admin recebe convite por email e define a própria.
   body('adminPassword').optional().isLength({ min: 8 }).withMessage('A senha do admin deve ter ao menos 8 caracteres.'),
   body('adminName').optional().trim(),
   validate,
@@ -30,7 +28,6 @@ router.put(
   param('id').isMongoId().withMessage('ID inválido.'),
   body('name').optional().trim().isLength({ min: 2 }).withMessage('Nome deve ter ao menos 2 caracteres.'),
   body('isActive').optional().isBoolean().withMessage('isActive deve ser booleano.'),
-  // 0 = sem limite próprio (o cliente pode usar até o teto da plataforma).
   body('sendingLimits.concurrency')
     .optional()
     .isInt({ min: 0, max: 50 })

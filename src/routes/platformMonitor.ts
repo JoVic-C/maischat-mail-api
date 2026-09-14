@@ -5,8 +5,7 @@ import { validate } from '../middleware/validate';
 
 const router = Router();
 
-// Administração da plataforma — o server.ts já exige requireSuperadmin.
-// NÃO passa pelo tenantContext: estas leituras atravessam clientes de propósito.
+// Leituras que atravessam clientes de propósito: sem tenantContext.
 
 router.get(
   '/overview',

@@ -21,13 +21,12 @@ export interface SafeUser {
   role: IUser['role'];
   isActive: boolean;
   createdAt?: Date;
-  /** true enquanto a pessoa não definiu a senha pelo link de convite. */
   pendingInvite: boolean;
 }
 
-/** Resultado de save(): o convite só aparece quando um usuário novo foi criado sem senha. */
 export interface SaveUserResult {
   user: SafeUser;
+  /** Só presente quando um usuário novo foi criado sem senha. */
   invite?: InviteLink & { emailSent: boolean };
 }
 
@@ -45,9 +44,8 @@ export class UserService {
   }
 
   /**
-   * O User NÃO leva o plugin tenantScope (o login precisa achar o usuário antes de
-   * existir contexto). Por isso o escopo aqui é explícito em toda query — e vem do
-   * contexto da requisição, nunca de um parâmetro que o cliente pudesse forjar.
+   * O User não leva o plugin tenantScope (o login precisa achá-lo antes de haver contexto),
+   * então o escopo é explícito e vem sempre do contexto da requisição.
    */
   private scope(): { tenantId: unknown } {
     const tenantId = requireTenantId();
@@ -66,27 +64,19 @@ export class UserService {
     return user;
   }
 
-  /**
-   * Cria quando não há id, atualiza quando há (mesmo padrão dos demais módulos).
-   *
-   * Na criação, a senha é OPCIONAL: sem ela o usuário nasce com um convite pendente
-   * e define a própria senha pelo link — que é o fluxo padrão. Quem convida nunca
-   * conhece a senha de ninguém.
-   */
+  /** Na criação a senha é opcional: sem ela o usuário recebe um convite e define a própria. */
   async save(data: SaveUserInput, actingUserId: string): Promise<SaveUserResult> {
     const email = data.email.toLowerCase().trim();
 
     if (!data.id) {
       const scope = this.scope();
-      // Email é único na plataforma: a checagem de colisão é global de propósito.
+      // Email é único na plataforma inteira.
       const clash = await User.findOne({ email });
       if (clash) throw new ConflictError('Já existe um usuário com este email.');
       const created = await User.create({
         ...scope,
         email,
         name: data.name ?? '',
-        // Placeholder aleatório quando não veio senha: o issue() do convite o
-        // substitui por outro, também aleatório, antes de qualquer login ser possível.
         password: data.password || crypto.randomBytes(32).toString('base64url'),
         role: data.role ?? 'user',
         isActive: data.isActive ?? true,
@@ -106,8 +96,7 @@ export class UserService {
     }
     if (data.name !== undefined) user.name = data.name;
 
-    // Um admin não pode rebaixar nem desativar a própria conta — evita o cenário
-    // em que a instalação fica sem nenhum administrador ativo.
+    // Impede que o cliente fique sem nenhum administrador ativo.
     const isSelf = String(user._id) === actingUserId;
     if (data.role !== undefined && data.role !== user.role) {
       if (isSelf) throw new BadRequestError('Você não pode alterar o próprio papel.');
@@ -116,10 +105,9 @@ export class UserService {
     if (data.isActive !== undefined && data.isActive !== user.isActive) {
       if (isSelf) throw new BadRequestError('Você não pode desativar a própria conta.');
       user.isActive = data.isActive;
-      if (!data.isActive) user.tokenVersion += 1; // desativou → derruba as sessões abertas
+      if (!data.isActive) user.tokenVersion += 1;
     }
 
-    // Senha só muda quando enviada (permite editar nome/papel sem redefinir a senha).
     if (data.password) {
       user.password = data.password;
       user.tokenVersion += 1;
@@ -129,13 +117,7 @@ export class UserService {
     return { user: this.toSafe(user) };
   }
 
-  /**
-   * Gera um link de redefinição de senha para um usuário do cliente.
-   *
-   * Existe para o caso de suporte: a pessoa não recebe o email (caixa cheia, cliente
-   * ainda sem SMTP, endereço corporativo bloqueando). Quem gera NÃO fica sabendo a
-   * senha — o dono do link é que escolhe a dele.
-   */
+  /** Para suporte a quem não recebe o email; quem gera não fica sabendo a senha. */
   async issueResetLink(id: string): Promise<ResetLink & { emailSent: boolean }> {
     const user = await this.getById(id);
     if (user.inviteTokenHash) {
@@ -144,7 +126,6 @@ export class UserService {
     return passwordResetService.issueAndSend(user);
   }
 
-  /** Reenvia o convite (invalida o link anterior). */
   async resendInvite(id: string): Promise<InviteLink & { emailSent: boolean }> {
     const user = await this.getById(id);
     return inviteService.resend(user);
@@ -161,7 +142,6 @@ export class UserService {
     await user.deleteOne();
   }
 
-  /** Derruba todas as sessões de um usuário (token comprometido, desligamento). */
   async revokeSessions(id: string): Promise<void> {
     const user = await this.getById(id);
     user.tokenVersion += 1;

@@ -1,6 +1,7 @@
 import Handlebars from 'handlebars';
 import { BadRequestError, NotFoundError } from '../errors';
 import Template, { type ITemplate, type TemplateDocument } from '../models/Template';
+import { garantirHtmlEnviavel } from '../utils/htmlEscapado';
 import { escapeRegex } from '../utils/regex';
 
 export interface SaveTemplateInput {
@@ -22,7 +23,6 @@ export interface PreviewResult {
   variables: string[];
 }
 
-/** Dados de exemplo usados quando o preview não recebe valores. */
 const SAMPLE_DATA: Record<string, string> = {
   name: 'João Silva',
   email: 'joao@empresa.com',
@@ -30,7 +30,6 @@ const SAMPLE_DATA: Record<string, string> = {
 };
 
 export class TemplateService {
-  /** Extrai os nomes de variáveis {{...}} de um texto (sem duplicar). */
   private detectVariables(...sources: string[]): string[] {
     const found = new Set<string>();
     for (const src of sources) {
@@ -62,6 +61,8 @@ export class TemplateService {
   }
 
   async save(data: SaveTemplateInput): Promise<TemplateDocument> {
+    garantirHtmlEnviavel(data.html);
+
     const variables = this.detectVariables(data.html, data.subject);
 
     if (data.id) {

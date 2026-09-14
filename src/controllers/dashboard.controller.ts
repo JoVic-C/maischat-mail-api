@@ -13,12 +13,6 @@ export const getStats = async (req: Request, res: Response, next: NextFunction):
   }
 };
 
-/**
- * Relatório de envios da conta no período.
- *
- * Substituiu o antigo `/activity`, que era fixo em 30 dias agrupados por dia: além da
- * série para o gráfico, devolve os totais e as taxas do recorte pedido.
- */
 export const getSendReport = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const { de, ate, agrupamento } = req.query as Record<string, string | undefined>;

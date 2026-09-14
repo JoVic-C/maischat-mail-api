@@ -15,8 +15,7 @@ export const getUsers = async (req: Request, res: Response, next: NextFunction):
 export const saveUser = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const result = await userService.save(req.body, String(req.user!._id));
-    // O link do convite volta na resposta para o admin poder repassar por outro canal
-    // quando o email não sai (cliente ainda sem SMTP configurado, por exemplo).
+    // O link do convite volta na resposta para repasse manual quando o email não sai.
     res.json({ message: 'Usuário salvo.', ...result });
   } catch (err) {
     logCtrlError('user.saveUser', req, err);

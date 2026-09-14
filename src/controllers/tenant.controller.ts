@@ -15,8 +15,7 @@ export const createTenant = async (req: Request, res: Response, next: NextFuncti
   try {
     const tenant = await tenantService.create(req.body);
 
-    // O email é best-effort: dizer só "Cliente criado" esconderia do superadmin que o
-    // admin não recebeu nada. Quando falha, o link volta no corpo para repasse manual.
+    // O email é best-effort: a mensagem avisa quando o admin não recebeu nada.
     const message = tenant.welcome?.emailSent
       ? `Cliente criado. Email de boas-vindas enviado para ${tenant.adminEmail}.`
       : 'Cliente criado, mas o email de boas-vindas não pôde ser enviado. Repasse o link de acesso ao administrador.';

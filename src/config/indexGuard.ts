@@ -4,18 +4,9 @@ import { logger } from '../utils/logger';
 import { captureError } from './sentry';
 
 /**
- * Checagem de índices no boot.
- *
- * O Mongoose cria os índices declarados no schema, mas NUNCA remove os que deixaram
- * de existir. Numa base que existiu antes do multi-cliente, um índice único antigo
- * (ex.: `contacts.email`) continua valendo e impede que dois clientes tenham o mesmo
- * registro — o código fica correto e o banco é que impõe a regra errada.
- *
- * O sintoma aparece tarde e disfarçado: um import legítimo é recusado como
- * "já cadastrado" meses depois, quando o segundo cliente esbarra no primeiro.
- * Esta verificação transforma isso em aviso na subida.
- *
- * Só avisa — nunca derruba a API. Um falso positivo não pode impedir o serviço de subir.
+ * Checagem de índices no boot. O Mongoose cria os índices do schema mas nunca remove os
+ * antigos: um índice único anterior ao multi-cliente (ex.: `contacts.email`) impediria
+ * dois clientes de terem o mesmo registro. Só avisa; nunca derruba a API.
  */
 
 export interface IndexIssue {
@@ -25,19 +16,9 @@ export interface IndexIssue {
 }
 
 /**
- * Procura índices ÚNICOS que não começam por `tenantId` nas collections com escopo
- * de cliente. Índices únicos globais são legítimos fora delas (User.email,
- * Tenant.slug, PlatformSettings.key), por isso a varredura é restrita ao que leva
- * o plugin `tenantScope`.
- */
-/**
- * Um índice único também é seguro quando começa por uma REFERÊNCIA a outra entidade
- * do cliente. Ex.: `SendLog.{campaignId, contactId}` — a campanha já pertence a um
- * cliente, então dois clientes nunca compartilham um `campaignId` e a colisão entre
- * eles é impossível por construção.
- *
- * A dedução é automática (segue o `ref` do schema) para que um modelo novo com o
- * mesmo desenho não vire alarme falso — e alarme falso é o que faz o aviso ser ignorado.
+ * Índice único que começa por referência a outra entidade do cliente também é seguro
+ * (ex.: `SendLog.{campaignId, contactId}`). Segue o `ref` do schema para não gerar
+ * alarme falso em modelos novos com o mesmo desenho.
  */
 function apontaParaEntidadeDoCliente(schema: mongoose.Schema, caminho: string): boolean {
   const ref = schema.path(caminho)?.options?.ref;
@@ -46,6 +27,7 @@ function apontaParaEntidadeDoCliente(schema: mongoose.Schema, caminho: string): 
   return Boolean(referenciado && isTenantScoped(referenciado.schema));
 }
 
+/** Índices únicos que não começam por `tenantId`, só nas collections com o plugin tenantScope. */
 export async function findGlobalUniqueIndexes(): Promise<IndexIssue[]> {
   const issues: IndexIssue[] = [];
 
@@ -56,7 +38,7 @@ export async function findGlobalUniqueIndexes(): Promise<IndexIssue[]> {
     try {
       indexes = await model.collection.indexes();
     } catch {
-      continue; // collection ainda não existe neste banco — nada a verificar
+      continue; // collection ainda não existe
     }
 
     for (const index of indexes) {
@@ -76,13 +58,11 @@ export async function findGlobalUniqueIndexes(): Promise<IndexIssue[]> {
   return issues;
 }
 
-/** Roda a checagem e registra o resultado. Chamada no boot, depois de conectar. */
 export async function verifyTenantIndexes(): Promise<IndexIssue[]> {
   let issues: IndexIssue[] = [];
   try {
     issues = await findGlobalUniqueIndexes();
   } catch (err) {
-    // A checagem é diagnóstico: se ela própria falhar, não pode atrapalhar o boot.
     logger.warn('Não foi possível verificar os índices por cliente', { message: (err as Error).message });
     return [];
   }
@@ -97,7 +77,6 @@ export async function verifyTenantIndexes(): Promise<IndexIssue[]> {
     );
   }
 
-  // Vale alerta em produção: é risco de o produto recusar dado legítimo de um cliente.
   captureError(new Error(`Índices únicos globais em collections multi-cliente: ${issues.length}`), {
     scope: 'indexGuard',
     issues,

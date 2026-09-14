@@ -1,10 +1,6 @@
 /**
- * Sentry — rastreamento de erros com stack trace e contexto.
- *
- * Precisa ser importado ANTES de qualquer outro módulo da aplicação (o SDK instrumenta
- * http/express/mongo no require), por isso é o primeiro import do server.ts.
- * Sem SENTRY_DSN no ambiente o SDK não é inicializado e todas as funções viram no-op —
- * dev e testes rodam sem depender de rede.
+ * Sentry. Precisa ser o primeiro import do server.ts, porque o SDK instrumenta http,
+ * express e mongo no carregamento. Sem SENTRY_DSN todas as funções viram no-op.
  */
 import * as Sentry from '@sentry/node';
 import { logger } from '../utils/logger';
@@ -14,9 +10,7 @@ let enabled = false;
 export function initSentry(): void {
   const dsn = process.env.SENTRY_DSN;
   if (!dsn) {
-    // Em produção isto é um problema operacional, não uma escolha: sem DSN nenhum erro
-    // sai da máquina, e a primeira notícia de uma falha vem do cliente reclamando.
-    // O aviso é forte de propósito — a linha discreta de antes passava batida no boot.
+    // Em produção, sem DSN nenhum erro sai da máquina: o aviso tem que chamar atenção no boot.
     if (process.env.NODE_ENV === 'production') {
       logger.warn(
         '⚠️  SENTRY_DSN não definido em PRODUÇÃO — nenhum erro será reportado. ' +
@@ -32,9 +26,8 @@ export function initSentry(): void {
     dsn,
     environment: process.env.NODE_ENV || 'development',
     release: process.env.SENTRY_RELEASE,
-    // Amostragem de performance: 10% por padrão para não estourar a cota.
     tracesSampleRate: Number(process.env.SENTRY_TRACES_SAMPLE_RATE ?? 0.1),
-    // Nunca enviar corpo de requisição: aqui trafegam CSV de contatos e senhas SMTP.
+    // Nunca enviar corpo de requisição: por aqui passam CSVs de contatos e senhas SMTP.
     sendDefaultPii: false,
     beforeSend(event) {
       if (event.request) {
@@ -53,13 +46,12 @@ export function initSentry(): void {
   logger.info(`🛰️  Sentry ativo (${process.env.NODE_ENV || 'development'})`);
 }
 
-/** Envia um erro ao Sentry com contexto. No-op quando o SDK não está ativo. */
 export function captureError(err: unknown, context?: Record<string, unknown>): void {
   if (!enabled) return;
   Sentry.captureException(err, context ? { extra: context } : undefined);
 }
 
-/** Identifica o usuário autenticado no evento (só id/email/papel — nada sensível). */
+/** Só id, email e papel. */
 export function setSentryUser(user: { id: string; email: string; role: string } | null): void {
   if (!enabled) return;
   Sentry.setUser(user);

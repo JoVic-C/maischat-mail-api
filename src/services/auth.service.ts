@@ -9,7 +9,7 @@ export interface PublicUser {
   email: string;
   name: string;
   role: string;
-  /** null para superadmin, que não pertence a nenhum cliente. */
+  /** null para superadmin. */
   tenantId: string | null;
 }
 export interface AuthResult {
@@ -17,7 +17,7 @@ export interface AuthResult {
   user: PublicUser;
 }
 
-/** Conteúdo do JWT. `v` é a versão do token — ver `revokeSessions`. */
+/** `v` é a versão do token, comparada com `tokenVersion` para revogar sessões. */
 export interface JwtPayload {
   id: string;
   v: number;
@@ -45,13 +45,9 @@ export class AuthService {
     if (!user || !(await user.comparePassword(password))) {
       throw new UnauthorizedError('E-mail ou senha inválidos.');
     }
-    // 403 e não 401: a credencial está CERTA — a identidade foi provada e o acesso é
-    // negado por política. É também o que o middleware requireAuth responde para a
-    // mesma condição; os dois divergiam, e o 401 daqui ainda fazia o interceptor do
-    // painel disparar um logout na própria tela de login.
+    // 403, não 401: a credencial está certa e o acesso é negado por política, como no requireAuth.
     if (!user.isActive) throw new ForbiddenError('Conta desativada.');
 
-    // Cliente desativado bloqueia o login de todos os usuários dele.
     if (user.tenantId) {
       const tenant = await Tenant.findById(user.tenantId).select('isActive').lean();
       if (!tenant || !tenant.isActive) throw new ForbiddenError('Cliente desativado.');
@@ -60,19 +56,13 @@ export class AuthService {
     return { token: this.signToken(user._id, user.tokenVersion), user: this.toPublicUser(user) };
   }
 
-  /**
-   * Invalida TODOS os tokens já emitidos para o usuário (logout em todos os dispositivos).
-   * Como o JWT é stateless, a revogação é feita por versão: o `requireAuth` compara o `v`
-   * do token com o `tokenVersion` do usuário e recusa os antigos.
-   */
+  /** Logout em todos os dispositivos: incrementa a versão, e o requireAuth recusa os tokens antigos. */
   async revokeSessions(userId: string): Promise<void> {
     await User.updateOne({ _id: userId }, { $inc: { tokenVersion: 1 } });
   }
 
-  /** Troca a própria senha. Revoga as sessões antigas e devolve um token novo. */
   async changePassword(userId: string, currentPassword: string, newPassword: string): Promise<{ token: string }> {
-    // Recarrega do banco COM a senha: o documento vindo do requireAuth usa
-    // `.select('-password')`, e sem o hash o comparePassword sempre falharia.
+    // Recarrega com a senha: o documento do requireAuth vem com `.select('-password')`.
     const user = await User.findById(userId);
     if (!user) throw new UnauthorizedError('Usuário não encontrado.');
 
@@ -82,8 +72,8 @@ export class AuthService {
     if (newPassword === currentPassword) {
       throw new BadRequestError('A nova senha deve ser diferente da atual.');
     }
-    user.password = newPassword; // o pre('save') do schema faz o hash
-    user.tokenVersion += 1; // derruba as sessões abertas com a senha antiga
+    user.password = newPassword;
+    user.tokenVersion += 1;
     await user.save();
     return { token: this.signToken(user._id, user.tokenVersion) };
   }

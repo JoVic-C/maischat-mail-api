@@ -92,12 +92,8 @@ export const bulkDeleteContacts = async (req: Request, res: Response, next: Next
 };
 
 /**
- * Exporta contatos em CSV, com os mesmos filtros da listagem.
- *
- * O corpo é escrito em streaming, então o cabeçalho já saiu quando um erro pode
- * aparecer no meio. O try cobre o caminho ANTES do primeiro write; depois disso a
- * única saída honesta é encerrar a conexão — o cliente vê um arquivo truncado em vez
- * de um CSV com mensagem de erro dentro.
+ * O corpo sai em streaming: depois do primeiro byte os headers já foram enviados, e a
+ * única saída para um erro é encerrar a conexão.
  */
 export const exportContacts = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {

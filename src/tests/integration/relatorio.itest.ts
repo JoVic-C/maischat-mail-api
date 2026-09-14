@@ -8,18 +8,13 @@ import Campaign from '../../models/Campaign';
 import SendLog from '../../models/SendLog';
 import { criarCliente } from './fabricas';
 
-/**
- * Relatório de envios: é um arquivo que sai do sistema com endereços de destinatários.
- * Além de sair certo, ele não pode sair para o cliente errado.
- */
 async function campanhaComEnvios(
   tenantId: Types.ObjectId | string,
   nome: string,
   envios: Array<Record<string, unknown>>
 ) {
   return runWithTenant(tenantId, async () => {
-    // templateId e listIds são obrigatórios no schema; o relatório não os usa, então
-    // referências soltas bastam e mantêm a fábrica sem depender de outras coleções.
+    // templateId e listIds são obrigatórios no schema, mas o relatório não os usa.
     const campanha = await Campaign.create({
       name: nome,
       templateId: new Types.ObjectId(),
@@ -38,12 +33,7 @@ async function campanhaComEnvios(
   });
 }
 
-/**
- * Baixa o relatório como binário.
- *
- * O supertest tenta interpretar o corpo pelo Content-Type e estragaria os bytes do
- * .xlsx; este parser junta os pedaços crus.
- */
+// Parser próprio: o supertest interpretaria o corpo pelo Content-Type e estragaria os bytes do .xlsx.
 function baixar(url: string, auth: Record<string, string>, query: Record<string, string> = {}) {
   return request(app)
     .get(url)
@@ -57,7 +47,6 @@ function baixar(url: string, auth: Record<string, string>, query: Record<string,
     });
 }
 
-/** Lê a planilha e devolve as linhas como texto — comparar bytes não ajudaria a depurar. */
 async function lerXlsx(buffer: Buffer): Promise<string[][]> {
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(buffer as never);
@@ -84,7 +73,7 @@ describe('relatório de envios', () => {
     expect(res.headers['content-disposition']).toContain('.xlsx');
 
     const linhas = await lerXlsx(res.body as Buffer);
-    expect(linhas).toHaveLength(3); // cabeçalho + 2 envios
+    expect(linhas).toHaveLength(3);
     expect(linhas[0][0]).toBe('Email');
     expect(linhas.flat().join(' ')).toContain('ana@x.com');
     expect(linhas.flat().join(' ')).toContain('mailbox not found');
@@ -142,7 +131,6 @@ describe('relatório de envios', () => {
 
     expect(res.headers['content-type']).toContain('text/csv');
     expect(res.text).toContain('Email;Situação');
-    // Aspas duplicadas é como o CSV representa uma aspa literal dentro do campo.
     expect(res.text).toContain('""quota exceeded""');
   });
 

@@ -3,7 +3,6 @@ import { redisConnection } from '../config/redis';
 import { logSideEffect } from '../utils/logger';
 
 export interface EmailJob {
-  /** Cliente dono da campanha — o worker reabre o escopo com ele. */
   tenantId: string;
   campaignId: string;
   sendLogId: string;
@@ -12,21 +11,13 @@ export interface EmailJob {
   data: Record<string, string>;
 
   /**
-   * Conteúdo do email — LEGADO, e por isso opcional.
-   *
-   * O HTML já viajou dentro de cada job. Numa campanha de milhões de destinatários
-   * isso duplicava o mesmo email milhões de vezes no Redis (dezenas de GB), e o
-   * enfileiramento morria antes de terminar. Hoje o conteúdo vive em UMA cópia, no
-   * `snapshot` da campanha, e o worker o lê de lá.
-   *
-   * Estes campos continuam aqui para os jobs que já estavam na fila quando a mudança
-   * subiu: o worker usa o que vier no job e só busca o snapshot quando não vier. Podem
-   * ser removidos depois que a fila girar por completo.
+   * Legado: o conteúdo agora vem do `snapshot` da campanha. Mantido para os jobs que já
+   * estavam na fila; pode sair quando a fila girar por completo.
    */
   subjectTemplate?: string;
   htmlTemplate?: string;
   attachments?: { filename: string; storedName: string }[];
-  /** Momento (ms) em que o job encontrou a campanha pausada pela 1ª vez — teto de espera no worker. */
+  /** Quando o job encontrou a campanha pausada pela primeira vez. */
   pausedSince?: number;
 }
 
@@ -52,15 +43,11 @@ export async function enqueueEmails(jobs: EmailJob[]): Promise<void> {
   );
 }
 
-/** Estados em que um job ainda NÃO começou a ser processado (removível com segurança). */
 const PENDING_STATES: JobType[] = ['waiting', 'delayed', 'prioritized', 'paused'];
 
 /**
- * Remove da fila os envios ainda pendentes de uma campanha.
- * Chamado ao excluir a campanha: sem isso, os jobs sobrevivem no Redis e o worker
- * continuaria enviando emails de uma campanha que não existe mais.
- * Jobs já em processamento (`active`) não são removíveis — o worker os descarta ao
- * não encontrar a campanha.
+ * Remove os envios pendentes de uma campanha excluída. Jobs já ativos não são removíveis;
+ * o worker os descarta ao não encontrar a campanha.
  */
 export async function removeCampaignJobs(campaignId: string): Promise<number> {
   const jobs = await emailQueue.getJobs(PENDING_STATES);
@@ -71,7 +58,7 @@ export async function removeCampaignJobs(campaignId: string): Promise<number> {
       await job.remove();
       removed++;
     } catch (err) {
-      // Job saiu do estado pendente entre o getJobs e o remove — não aborta o lote.
+      // O job saiu do estado pendente entre a leitura e a remoção.
       logSideEffect('emailQueue.removeCampaignJobs', err, { jobId: job.id });
     }
   }

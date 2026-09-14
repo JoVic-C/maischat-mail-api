@@ -4,7 +4,6 @@ import { redisConnection } from '../config/redis';
 export const SCHEDULER_QUEUE_NAME = 'campaign-scheduler';
 
 export interface ScheduleJob {
-  /** Cliente dono da campanha — o worker reabre o escopo com ele. */
   tenantId: string;
   campaignId: string;
 }

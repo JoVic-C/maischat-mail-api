@@ -1,13 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { detectDelimiter, parseCsv, splitLine } from '../../utils/csv';
 
-/**
- * O parser de CSV é a porta de entrada dos contatos: um erro aqui não quebra a
- * aplicação, ele importa dado errado em silêncio. Daí a cobertura ser sobre os casos
- * que aparecem em planilha de cliente de verdade — ponto e vírgula, aspas, acento,
- * coluna faltando — e não sobre o caminho feliz.
- */
-
 describe('detectDelimiter', () => {
   it('escolhe ponto e vírgula quando ele domina o cabeçalho', () => {
     expect(detectDelimiter('nome;email;empresa')).toBe(';');
@@ -22,7 +15,6 @@ describe('detectDelimiter', () => {
   });
 
   it('um nome com vírgula dentro não faz o cabeçalho de ; virar de ,', () => {
-    // "Silva, João" no cabeçalho é raro, mas o empate não pode virar delimitador errado
     expect(detectDelimiter('nome;email;observação, com vírgula')).toBe(';');
   });
 });

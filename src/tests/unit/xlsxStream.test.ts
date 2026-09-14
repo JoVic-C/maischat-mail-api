@@ -1,12 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { cellText } from '../../utils/xlsxStream';
 
-/**
- * O Excel não devolve texto puro. Um email digitado vira objeto de hyperlink, um nome
- * com parte em negrito vira lista de trechos, e uma fórmula vira `{ formula, result }`.
- * Sem tratar cada forma, o valor importado vira "[object Object]" — e o contato entra
- * na base com email inválido, sem ninguém perceber na hora.
- */
 describe('cellText', () => {
   it('devolve string aparada', () => {
     expect(cellText('  ana@x.com  ')).toBe('ana@x.com');
@@ -48,7 +42,6 @@ describe('cellText', () => {
   });
 
   it('nunca devolve "[object Object]" para um objeto desconhecido vazio', () => {
-    // Não sabemos o formato, mas o resultado tem que ser inofensivo para a validação.
     expect(cellText({ algo: 'inesperado' })).not.toContain('[object');
   });
 });

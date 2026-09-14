@@ -4,20 +4,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import app from '../../app';
 import { criarCliente } from './fabricas';
 
-/**
- * Quando o destino do arquivo não está gravável.
- *
- * O `mkdirSync` roda dentro do callback do multer, e a exceção subia crua: a tela
- * mostrava "Erro interno." e nada dizia se o problema era o arquivo enviado ou o
- * servidor. As duas causas reais — volume montado com dono diferente do usuário do
- * container, e disco cheio — são de infraestrutura, e a resposta precisa dizer isso.
- */
 describe('destino do upload indisponível', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  /** Faz a preparação do diretório falhar como o sistema de arquivos falharia. */
   function falharAoCriarDiretorio(codigo: string) {
     const original = fs.existsSync;
     vi.spyOn(fs, 'existsSync').mockImplementation((caminho) => {
@@ -44,7 +35,6 @@ describe('destino do upload indisponível', () => {
 
     expect(res.status).toBe(500);
     expect(res.body.error).toMatch(/permissão para gravar/i);
-    // Nada de caminho de disco ou código de erro do sistema na resposta.
     expect(JSON.stringify(res.body)).not.toMatch(/EACCES|\/app\/|data\/imports/);
   });
 
@@ -74,13 +64,7 @@ describe('destino do upload indisponível', () => {
   });
 });
 
-/**
- * O caso que escapou da primeira correção: o diretório EXISTE, mas não é gravável.
- *
- * `ensureImportDir` só criava quando faltava, então nada falhava ali — a exceção vinha
- * depois, ao gravar o arquivo, como erro genérico. É o cenário do volume que chega
- * montado com dono diferente do usuário do container.
- */
+// Cenário do volume montado com dono diferente do usuário do container.
 describe('destino existe mas não é gravável', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -89,9 +73,7 @@ describe('destino existe mas não é gravável', () => {
   it('avisa que é permissão, em vez de deixar o upload falhar sem explicação', async () => {
     const a = await criarCliente('Cliente A');
 
-    // Diretório presente...
     vi.spyOn(fs, 'existsSync').mockReturnValue(true);
-    // ...mas fechado para escrita.
     vi.spyOn(fs, 'accessSync').mockImplementation(() => {
       const erro = new Error('EACCES: permission denied') as NodeJS.ErrnoException;
       erro.code = 'EACCES';

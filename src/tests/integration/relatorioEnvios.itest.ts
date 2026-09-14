@@ -7,13 +7,6 @@ import Campaign from '../../models/Campaign';
 import SendLog from '../../models/SendLog';
 import { criarCliente } from './fabricas';
 
-/**
- * Relatório de envios da conta (dashboard).
- *
- * Atravessa todas as campanhas do cliente e recorta por período. Os riscos próprios
- * são somar o que não é seu (outro cliente) e cortar o dia no fuso errado — um envio
- * das 21h em Brasília cairia no dia seguinte se o corte fosse em UTC.
- */
 async function criarEnvios(tenantId: Types.ObjectId | string, envios: Array<Record<string, unknown>>) {
   return runWithTenant(tenantId, async () => {
     const campanha = await Campaign.create({
@@ -28,7 +21,6 @@ async function criarEnvios(tenantId: Types.ObjectId | string, envios: Array<Reco
   });
 }
 
-/** Data em Brasília (UTC-3) convertida para o instante UTC correspondente. */
 function emBrasilia(dia: string, hora: string): Date {
   return new Date(`${dia}T${hora}:00.000-03:00`);
 }
@@ -83,7 +75,6 @@ describe('relatório de envios da conta', () => {
     const padrao = await request(app).get('/api/dashboard/sends').set(a.auth).expect(200);
     expect(padrao.body.totais.registros).toBe(1);
 
-    // Abrindo a janela, os dois entram.
     const amplo = await request(app)
       .get('/api/dashboard/sends')
       .query({ de: new Date(hoje.getTime() - 90 * 86_400_000).toISOString(), agrupamento: 'month' })
@@ -93,8 +84,7 @@ describe('relatório de envios da conta', () => {
   });
 
   it('agrupa por dia usando o fuso de Brasília, não UTC', async () => {
-    // 21h em Brasília é 00h do dia seguinte em UTC. Cortar em UTC jogaria este envio
-    // para o dia errado, e o número não bateria com o que o operador viu na tela.
+    // 21h em Brasília já é o dia seguinte em UTC.
     const a = await criarCliente('Cliente A');
     const noite = emBrasilia('2026-09-02', '21:30');
     await criarEnvios(a.tenant._id, [{ email: 'ana@x.com', status: 'sent', createdAt: noite, sentAt: noite }]);

@@ -3,36 +3,24 @@ import { logSideEffect } from '../utils/logger';
 import { createRedisClient, redisConnection } from './redis';
 
 /**
- * Aviso entre instâncias de que os ajustes da plataforma mudaram.
- *
- * Por que existe: o `limiter` do BullMQ é fixado na construção do Worker — mudar a taxa
- * exige recriar o worker. Com mais de uma instância da API no ar, salvar a configuração
- * numa delas não alcançaria as outras, e a plataforma ficaria com workers em taxas
- * diferentes até o próximo deploy. O canal do Redis resolve isso sem inventar
- * infraestrutura nova: o Redis já é dependência da fila.
- *
- * Publicar usa a conexão principal (é comando comum); escutar abre uma conexão própria,
- * porque um cliente em modo `subscribe` não aceita mais nada.
+ * Aviso entre instâncias de que os ajustes da plataforma mudaram. O `limiter` do BullMQ é
+ * fixado na construção do worker, então cada instância precisa recriar o seu. Escutar
+ * abre conexão própria: um cliente em modo `subscribe` não aceita outros comandos.
  */
 const CHANNEL = 'mailpulse:platform-settings:changed';
 
 let subscriber: Redis | null = null;
 
-/** Avisa TODAS as instâncias (inclusive esta) que a configuração mudou. */
 export async function publishSettingsChanged(): Promise<void> {
   try {
     await redisConnection.publish(CHANNEL, '1');
   } catch (err) {
-    // A configuração já foi salva; não propagar não pode derrubar a requisição.
-    // Esta instância recarrega assim mesmo — quem chama recarrega localmente.
+    // A configuração já foi salva; falhar ao propagar não derruba a requisição.
     logSideEffect('settingsBus.publish', err);
   }
 }
 
-/**
- * Passa a escutar mudanças. Idempotente: chamar duas vezes não abre duas conexões.
- * O handler roda em toda instância, incluindo a que originou a mudança.
- */
+/** Idempotente. O handler roda em toda instância, inclusive a que originou a mudança. */
 export async function subscribeSettingsChanged(onChange: () => Promise<void>): Promise<void> {
   if (subscriber) return;
 
@@ -47,7 +35,6 @@ export async function subscribeSettingsChanged(onChange: () => Promise<void>): P
   await subscriber.subscribe(CHANNEL);
 }
 
-/** Fecha a conexão de escuta (shutdown da API). */
 export async function closeSettingsBus(): Promise<void> {
   if (!subscriber) return;
   const client = subscriber;

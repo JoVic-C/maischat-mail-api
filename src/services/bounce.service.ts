@@ -6,13 +6,8 @@ import { logWarn } from '../utils/logger';
 
 export class BounceService {
   /**
-   * Marca um bounce.
-   *
-   * Chamado de dois lugares com contextos diferentes:
-   * - worker / rota admin → já está no escopo de um cliente; tudo é filtrado sozinho.
-   * - webhook do xMailer  → modo system, sem cliente na entrada. Aí o envio (SendLog)
-   *   é a única âncora confiável: dele sai o tenantId, e só o contato DAQUELE cliente
-   *   é marcado. Sem isso, um email presente em dois clientes bloquearia o contato errado.
+   * Vindo do webhook (modo system), o envio é a única âncora de qual cliente é o endereço:
+   * sem ela, um email presente em dois clientes bloquearia o contato errado.
    */
   async processBounce(
     email: string,
@@ -26,13 +21,11 @@ export class BounceService {
 
     const isSystem = getTenantContext()?.mode === 'system';
     if (isSystem && !log) {
-      // Sem envio correspondente não há como saber de qual cliente é o endereço.
       logWarn('bounce.processBounce', `sem envio correspondente para ${normalized} — nenhum contato marcado`);
       return { email: normalized, contactMarked: false };
     }
 
-    // Em modo system o filtro por tenant é explícito (vem do envio encontrado);
-    // no escopo de um cliente o plugin já cuida disso.
+    // No modo system o filtro por cliente vem do envio; no escopo de um cliente, o plugin cuida.
     const contactFilter = isSystem && log ? { email: normalized, tenantId: log.tenantId } : { email: normalized };
     const contact = await Contact.findOne(contactFilter);
 
@@ -43,7 +36,7 @@ export class BounceService {
 
     if (log && log.status !== 'bounced') {
       log.status = 'bounced';
-      log.error = reason; // motivo real do bounce (SMTP, webhook) ou "simulado" no teste
+      log.error = reason;
       await log.save();
       await Campaign.updateOne({ _id: log.campaignId }, { $inc: { 'stats.bounced': 1 } });
     }

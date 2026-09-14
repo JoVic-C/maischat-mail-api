@@ -14,18 +14,14 @@ function isMongoDuplicateError(err: unknown): err is MongoDuplicateError {
 }
 
 /**
- * Id que não é um ObjectId.
- *
- * Vem por dois caminhos: `new Types.ObjectId(x)` direto, que lança BSONError, e o cast
- * automático do Mongoose numa query, que lança CastError. O nome é comparado como
- * texto para não depender do pacote `bson`, que é dependência transitiva.
+ * BSONError vem de `new Types.ObjectId(x)`; CastError, do cast automático numa query. O
+ * nome é comparado como texto para não depender do pacote `bson`, que é transitivo.
  */
 function isIdMalformado(err: unknown): boolean {
   if (err instanceof mongoose.Error.CastError) return err.kind === 'ObjectId';
   return err instanceof Error && err.name === 'BSONError';
 }
 
-/** Códigos do multer traduzidos para o que o usuário pode fazer a respeito. */
 const MENSAGENS_UPLOAD: Record<string, string> = {
   LIMIT_FILE_SIZE: 'Arquivo muito grande.',
   LIMIT_FILE_COUNT: 'Arquivos demais de uma vez.',
@@ -36,7 +32,6 @@ const MENSAGENS_UPLOAD: Record<string, string> = {
   LIMIT_FIELD_COUNT: 'Campos demais no formulário.',
 };
 
-/** Campos únicos do banco com nome que faça sentido para quem preencheu o formulário. */
 const NOMES_DE_CAMPO: Record<string, string> = {
   email: 'e-mail',
   name: 'nome',
@@ -59,8 +54,6 @@ export const errorHandler = (err: unknown, req: Request, res: Response, _next: N
   }
 
   if (err instanceof multer.MulterError) {
-    // A mensagem do multer é interna ("Unexpected field", "Too many files") e ia crua
-    // para a tela. Cada código vira uma frase que diz o que fazer.
     logWarn('errorHandler.upload', err.code, { method: req.method, path: req.originalUrl });
     res.status(400).json({ error: MENSAGENS_UPLOAD[err.code] ?? 'Não foi possível enviar o arquivo.' });
     return;
@@ -69,26 +62,19 @@ export const errorHandler = (err: unknown, req: Request, res: Response, _next: N
   if (isMongoDuplicateError(err)) {
     const campo = err.keyValue ? Object.keys(err.keyValue)[0] : '';
     const nome = NOMES_DE_CAMPO[campo];
-    // Sem o nome amigável a resposta era "Valor duplicado para tenantId_1_email_1" —
-    // o nome do índice do Mongo, que não diz nada a quem preencheu o formulário.
     logWarn('errorHandler.duplicado', campo || 'desconhecido');
     res.status(409).json({ error: nome ? `Já existe um registro com este ${nome}.` : 'Este registro já existe.' });
     return;
   }
 
+  // Id malformado é erro de quem chamou; sem este ramo viraria 500.
   if (isIdMalformado(err)) {
-    // Um id que não é ObjectId é erro de quem chamou, não falha do servidor. Sem este
-    // ramo, `new Types.ObjectId('undefined')` — vindo de um campo que o painel não
-    // preencheu — subia como exceção crua e virava 500 "Erro interno.", indistinguível
-    // de um defeito nosso. São nove conversões assim espalhadas pelos serviços; tratar
-    // aqui cobre todas de uma vez.
     logWarn('errorHandler.idMalformado', (err as Error).message, { method: req.method, path: req.originalUrl });
     res.status(400).json({ error: 'A requisição trouxe um identificador inválido.', code: 'ID_INVALIDO' });
     return;
   }
 
   if (err instanceof mongoose.Error.ValidationError) {
-    // O `details` levava a mensagem do Mongoose: inglês e caminhos do schema.
     logWarn('errorHandler.schema', err.message, { method: req.method, path: req.originalUrl });
     res.status(400).json({ error: 'Dados inválidos.' });
     return;

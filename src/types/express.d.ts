@@ -4,8 +4,9 @@ import { UserDocument } from '../models/User';
 declare global {
   namespace Express {
     interface Request {
-      user?: UserDocument; // populado pelo requireAuth (JWT)
-      apiKeyUsed?: string; // populado pelo apiKeyAuth (Fase E)
+      /** Preenchido pelo requireAuth. */
+      user?: UserDocument;
+      apiKeyUsed?: string;
       apiKeyId?: Types.ObjectId;
     }
   }

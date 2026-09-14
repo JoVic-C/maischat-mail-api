@@ -1,20 +1,18 @@
 /**
- * Remoção total dos dados de um cliente.
- *
- * Precisa rodar DENTRO de `runWithTenant(id, ...)`: cada deleteMany abaixo sai
- * escopado pelo plugin, então não há como apagar a base de outro cliente por
- * engano. Fica em arquivo próprio para deixar explícito o que é destrutivo.
+ * Remoção total dos dados de um cliente. Precisa rodar dentro de `runWithTenant(id, ...)`:
+ * cada deleteMany sai escopado pelo plugin e não alcança outro cliente.
  */
 import Campaign from '../models/Campaign';
 import Contact from '../models/Contact';
 import List from '../models/List';
 import Segment from '../models/Segment';
+import SendingDomain from '../models/SendingDomain';
 import SendLog from '../models/SendLog';
 import SmtpSettings from '../models/SmtpSettings';
 import Template from '../models/Template';
 
 export async function deleteAllOfTenant(): Promise<Record<string, number>> {
-  const [sendLogs, campaigns, contacts, lists, templates, segments, smtp] = await Promise.all([
+  const [sendLogs, campaigns, contacts, lists, templates, segments, smtp, sendingDomains] = await Promise.all([
     SendLog.deleteMany({}),
     Campaign.deleteMany({}),
     Contact.deleteMany({}),
@@ -22,6 +20,7 @@ export async function deleteAllOfTenant(): Promise<Record<string, number>> {
     Template.deleteMany({}),
     Segment.deleteMany({}),
     SmtpSettings.deleteMany({}),
+    SendingDomain.deleteMany({}),
   ]);
 
   return {
@@ -32,5 +31,6 @@ export async function deleteAllOfTenant(): Promise<Record<string, number>> {
     templates: templates.deletedCount ?? 0,
     segments: segments.deletedCount ?? 0,
     smtp: smtp.deletedCount ?? 0,
+    sendingDomains: sendingDomains.deletedCount ?? 0,
   };
 }

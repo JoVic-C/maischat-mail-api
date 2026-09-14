@@ -14,7 +14,7 @@ export interface SendEmailParams {
   campaignId: string;
   sendLogId: string;
   attachments?: { filename: string; storedName: string }[];
-  /** true = envio de teste: personaliza mas NÃO injeta pixel/links/rodapé de tracking. */
+  /** Envio de teste: personaliza sem injetar pixel, links rastreados ou rodapé. */
   skipTracking?: boolean;
 }
 
@@ -26,13 +26,13 @@ export class EmailService {
   private get baseUrl(): string {
     return process.env.PUBLIC_API_URL || 'http://localhost:3000';
   }
-  /** Cache de transporters (pool) por credencial — evita abrir uma conexão SMTP nova a cada email. */
+
   private transporters = new Map<string, Transporter>();
 
-  /** Teto do cache: cada entrada segura um pool de até 5 conexões TCP abertas. */
+  /** Cada entrada segura um pool de até 5 conexões TCP. */
   private static readonly MAX_TRANSPORTERS = 20;
 
-  /** A chave inclui a senha; o hash evita manter credencial em texto na memória do processo. */
+  /** Hash para não manter a senha em texto como chave de cache. */
   private cacheKey(smtp: ISmtpSettings): string {
     return crypto
       .createHash('sha256')
@@ -44,7 +44,6 @@ export class EmailService {
     const key = this.cacheKey(smtp);
     let transporter = this.transporters.get(key);
     if (!transporter) {
-      // Cache cheio: fecha o pool inserido há mais tempo (Map preserva ordem de inserção).
       if (this.transporters.size >= EmailService.MAX_TRANSPORTERS) {
         const oldestKey = this.transporters.keys().next().value as string;
         this.transporters.get(oldestKey)?.close();
@@ -63,19 +62,16 @@ export class EmailService {
     return transporter;
   }
 
-  /** Pixel 1x1 de abertura, apontando para a nossa rota de tracking. */
   private trackingPixel(campaignId: string, sendLogId: string): string {
     const url = `${this.baseUrl}/api/tracking/open/${campaignId}/${sendLogId}`;
     return `<img src="${url}" width="1" height="1" alt="" style="display:none" />`;
   }
 
-  /** URL assinada de descadastro — usada no rodapé e no cabeçalho List-Unsubscribe. */
   private unsubscribeUrl(campaignId: string, sendLogId: string): string {
     const sig = signUnsubscribe(campaignId, sendLogId);
     return `${this.baseUrl}/api/tracking/unsubscribe/${campaignId}/${sendLogId}?sig=${sig}`;
   }
 
-  /** Bloco de rodapé com o link de descadastro. */
   private unsubscribeFooter(campaignId: string, sendLogId: string): string {
     const url = this.unsubscribeUrl(campaignId, sendLogId);
     return `<div style="margin-top:24px;font-size:12px;color:#888;text-align:center">
@@ -83,11 +79,10 @@ export class EmailService {
     </div>`;
   }
 
-  /** Reescreve os links do email para passarem pelo redirect de tracking (aspas simples ou duplas). */
   private rewriteLinks(html: string, campaignId: string, sendLogId: string): string {
     return html.replace(/href=(["'])(https?:\/\/[^"']+)\1/gi, (_match, quote: string, originalUrl: string) => {
       const encoded = encodeURIComponent(originalUrl);
-      const sig = signLink(campaignId, sendLogId, originalUrl); // assina p/ o redirect confiar depois
+      const sig = signLink(campaignId, sendLogId, originalUrl);
       const tracked = `${this.baseUrl}/api/tracking/click/${campaignId}/${sendLogId}?url=${encoded}&sig=${sig}`;
       return `href=${quote}${tracked}${quote}`;
     });
@@ -101,21 +96,20 @@ export class EmailService {
     return `${withLinks}${footer}${pixel}`;
   }
 
-  /** Gera uma versão em TEXTO puro a partir do HTML — melhora entregabilidade
-   *  (reduz spam score) e atende clientes que não renderizam HTML. */
+  /** A versão em texto melhora a entregabilidade e atende clientes sem HTML. */
   private htmlToText(html: string): string {
     return html
-      .replace(/<style[\s\S]*?<\/style>/gi, '') // remove blocos <style>
-      .replace(/<script[\s\S]*?<\/script>/gi, '') // remove <script>
-      .replace(/<br\s*\/?>/gi, '\n') // <br> vira quebra de linha
-      .replace(/<\/(p|div|h[1-6]|li|tr)>/gi, '\n') // fim de bloco vira quebra
-      .replace(/<[^>]+>/g, '') // remove as demais tags
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|div|h[1-6]|li|tr)>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
       .replace(/&nbsp;/g, ' ')
       .replace(/&amp;/g, '&')
       .replace(/&lt;/g, '<')
       .replace(/&gt;/g, '>')
-      .replace(/[ \t]+/g, ' ') // colapsa espaços
-      .replace(/\n{3,}/g, '\n\n') // no máx. 1 linha em branco
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
       .split('\n')
       .map((l) => l.trim())
       .join('\n')
@@ -123,11 +117,8 @@ export class EmailService {
   }
 
   /**
-   * Email transacional (convite, aviso de conta) — não é campanha.
-   *
-   * Sem tracking, sem rodapé de descadastro e sem cabeçalho List-Unsubscribe: são
-   * mensagens operacionais que o destinatário não pode "cancelar" sem perder o acesso,
-   * e marcá-las como marketing prejudicaria a entregabilidade das duas coisas.
+   * Email operacional (convite, aviso de conta): sem tracking nem List-Unsubscribe, que
+   * marcariam a mensagem como marketing e prejudicariam a entregabilidade.
    */
   async sendTransactional(params: {
     smtp: ISmtpSettings;
@@ -149,11 +140,9 @@ export class EmailService {
   async send(params: SendEmailParams): Promise<SendEmailResult> {
     const transporter = this.buildTransporter(params.smtp);
     const subject = Handlebars.compile(params.subjectTemplate)(params.data);
-    // Teste: só personaliza. Envio real: injeta tracking (pixel/links/rodapé).
     const html = params.skipTracking ? Handlebars.compile(params.htmlTemplate)(params.data) : this.buildHtml(params);
-    // Versão texto (alternativa) gerada do conteúdo personalizado, sem os artefatos de tracking.
     const text = this.htmlToText(Handlebars.compile(params.htmlTemplate)(params.data));
-    // Anexos: lê sempre de uploads/ (basename blinda contra path traversal).
+    // basename impede path traversal no nome armazenado.
     const attachments = (params.attachments ?? []).map((a) => ({
       filename: a.filename,
       path: path.join('uploads', path.basename(a.storedName)),
@@ -164,15 +153,15 @@ export class EmailService {
       to: params.to,
       subject,
       html,
-      text, // multipart/alternative: cliente escolhe HTML ou texto
-      attachments, // anexos da campanha
+      text,
+      attachments,
       ...(params.skipTracking
         ? {}
         : {
             headers: {
-              // Cabeçalho padrão: alguns clientes mostram um botão nativo de descadastro.
               'List-Unsubscribe': `<${this.unsubscribeUrl(params.campaignId, params.sendLogId)}>`,
-              'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click', // RFC 8058: descadastro em 1 clique (POST)
+              // RFC 8058: descadastro em um clique.
+              'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
             },
           }),
     });

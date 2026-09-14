@@ -5,12 +5,6 @@ import Tenant from '../../models/Tenant';
 import User from '../../models/User';
 import { criarCliente, criarSuperadmin } from './fabricas';
 
-/**
- * Portaria: quem entra, com o quê, e o que cada papel alcança.
- *
- * São as regras que, se falharem, não aparecem em nenhuma tela — a requisição
- * simplesmente passa. Por isso o foco é nos casos negativos.
- */
 describe('login', () => {
   it('credencial correta devolve token e o usuário público', async () => {
     const { user, senha } = await criarCliente('Cliente A');
@@ -19,7 +13,6 @@ describe('login', () => {
 
     expect(res.body.token).toBeTruthy();
     expect(res.body.user.email).toBe(user.email);
-    // A senha (nem o hash) pode voltar na resposta.
     expect(JSON.stringify(res.body)).not.toContain('password');
   });
 
@@ -42,8 +35,7 @@ describe('login', () => {
     const { user, senha } = await criarCliente('Cliente A');
     await User.updateOne({ _id: user._id }, { isActive: false });
 
-    // 403, não 401: a senha está certa, então a identidade foi provada e o que barra é
-    // a política. Mesmo código que o requireAuth devolve — os dois já divergiram.
+    // 403, não 401: a senha está certa, então o que barra é a política, não a identidade.
     const res = await request(app).post('/api/auth/login').send({ email: user.email, password: senha }).expect(403);
 
     expect(res.body.error).toMatch(/desativada/i);
@@ -61,8 +53,6 @@ describe('login', () => {
   });
 
   it('login e rota protegida respondem o MESMO código para conta desativada', async () => {
-    // É a inconsistência que este ajuste corrigiu: divergir aqui faz o painel tratar
-    // a mesma situação de duas formas — e o 401 no login ainda disparava um logout.
     const { user, senha, auth } = await criarCliente('Cliente A');
     await User.updateOne({ _id: user._id }, { isActive: false });
 
@@ -83,7 +73,6 @@ describe('token', () => {
   });
 
   it('token emitido antes do logout-all deixa de valer', async () => {
-    // É a revogação: sem ela, um token roubado continuaria aceito até expirar.
     const { user, auth } = await criarCliente('Cliente A');
     await request(app).get('/api/contacts').set(auth).expect(200);
 

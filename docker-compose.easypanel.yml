@@ -1,16 +1,6 @@
-# mMail — stack para o EasyPanel.
-#
-# Aqui só a APLICAÇÃO. O Mongo e o Redis são serviços gerenciados pelo próprio
-# EasyPanel (criados pela interface), e chegam por MONGO_URI e REDIS_URL — por isso
-# não existem serviços de banco neste arquivo. Se você preferir subir os dois dentro
-# desta stack, use o docker-compose.yml local como base.
-#
-# Diferenças em relação ao compose local, todas porque o EasyPanel assume o que
-# localmente é nosso:
-#
-#   1. NENHUMA porta publicada. Ele roteia para a porta interna e cuida de TLS.
-#   2. Variáveis vêm do painel (aba Environment), não de arquivo — o `.env` é opcional.
-#   3. Domínio vai no serviço `frontend`; o backend fica só na rede interna.
+# mMail no EasyPanel. Mongo e Redis são serviços gerenciados do próprio EasyPanel e
+# chegam por MONGO_URI e REDIS_URL. Sem portas publicadas: o domínio vai no `frontend`,
+# cujo nginx faz proxy de /api e /uploads para o backend pela rede interna.
 
 services:
   backend:
@@ -25,45 +15,39 @@ services:
       NODE_ENV: production
       PORT: '3000'
 
-      # ── Serviços gerenciados do EasyPanel ──
-      # Copie a "URL de Conexão Interna" de cada um. Dois cuidados no Mongo:
-      # incluir o NOME DO BANCO no fim do host e, como o usuário é criado no banco
-      # `admin`, acrescentar authSource=admin — sem isso a autenticação falha.
+      # URL de conexão interna. No Mongo, inclua o nome do banco e authSource=admin:
       #   mongodb://user:senha@outros_mongomail:27017/mmail?authSource=admin&tls=false
       MONGO_URI: ${MONGO_URI:?cole a URL de conexão interna do Mongo}
       REDIS_URL: ${REDIS_URL:?cole a URL de conexão interna do Redis}
 
-      # ── Obrigatórias: a API encerra no boot se faltarem ──
       JWT_SECRET: ${JWT_SECRET:?defina JWT_SECRET no painel}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?defina ENCRYPTION_KEY no painel}
 
-      # ── Domínio real, não localhost ──
-      # Vão dentro dos emails: pixel de abertura, link de clique, descadastro,
-      # convite e recuperação de senha. Errado aqui, o email já enviado não se corrige.
+      # Vão dentro dos emails (pixel, cliques, descadastro, convites): email enviado com
+      # URL errada não se corrige depois.
       PUBLIC_API_URL: ${PUBLIC_API_URL:?defina a URL pública da API}
       FRONTEND_URL: ${FRONTEND_URL:?defina a URL pública do painel}
 
-      # ── Opcionais (mesmo default do código quando ausentes) ──
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
       SENTRY_DSN: ${SENTRY_DSN:-}
       XMAILER_SMTP_HOST: ${XMAILER_SMTP_HOST:-}
       XMAILER_SMTP_PORT: ${XMAILER_SMTP_PORT:-587}
-      # Vazia basta: a 465 usa TLS direto e as demais STARTTLS. Só preencha ('true'
-      # ou 'false') para um servidor que fuja dessa convenção.
+      # Vazia basta: 465 usa TLS direto e as demais STARTTLS.
       XMAILER_SMTP_SECURE: ${XMAILER_SMTP_SECURE:-}
       XMAILER_SMTP_USER: ${XMAILER_SMTP_USER:-}
       XMAILER_SMTP_PASS: ${XMAILER_SMTP_PASS:-}
       XMAILER_FROM_NAME: ${XMAILER_FROM_NAME:-mMail}
       XMAILER_FROM_EMAIL: ${XMAILER_FROM_EMAIL:-}
       XMAILER_WEBHOOK_TOKEN: ${XMAILER_WEBHOOK_TOKEN:-}
+      SENDING_PLATFORM_HOSTS: ${SENDING_PLATFORM_HOSTS:-}
+      SENDING_SPF_INCLUDE: ${SENDING_SPF_INCLUDE:-}
+      SENDING_DKIM_SELECTOR: ${SENDING_DKIM_SELECTOR:-mmail}
+      SENDING_DKIM_TARGET: ${SENDING_DKIM_TARGET:-}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
     volumes:
-      # Imagens dos emails e anexos das campanhas. Sem este volume, todo upload
-      # é perdido a cada redeploy.
       - uploads:/app/uploads
-      # CSVs de importação em processamento. Volume próprio porque, ao contrário de
-      # uploads, este conteúdo NÃO pode ser servido publicamente.
+      # Volume próprio: ao contrário de uploads, não pode ser servido publicamente.
       - imports:/app/data
     healthcheck:
       test:
@@ -78,9 +62,6 @@ services:
       retries: 3
       start_period: 15s
 
-  # É este serviço que recebe o domínio no EasyPanel (porta 80). O nginx dele serve
-  # o painel e faz proxy de /api e /uploads para o backend pela rede interna — por
-  # isso o backend não precisa de domínio próprio nem de porta publicada.
   frontend:
     build:
       context: ../frontend

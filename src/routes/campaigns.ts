@@ -38,8 +38,7 @@ router.get(
   ctrl.getCampaignLogs
 );
 
-// Download do relatório de envios. Rota separada da de logs porque devolve arquivo,
-// não JSON paginado — e percorre a campanha inteira, sem teto de página.
+// Devolve arquivo com a campanha inteira, sem paginação.
 router.get(
   '/:id/report',
   param('id').isMongoId().withMessage('ID inválido.'),

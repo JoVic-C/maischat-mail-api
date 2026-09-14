@@ -17,7 +17,6 @@ export interface EngineSettings {
 export interface PlatformSettingsView extends EngineSettings {
   updatedByEmail: string;
   updatedAt: string | null;
-  /** Limites aceitos, para a tela não precisar duplicá-los. */
   bounds: {
     workerConcurrency: { min: number; max: number };
     ratePerMinute: { min: number; max: number };
@@ -29,7 +28,7 @@ export interface UpdateSettingsInput {
   ratePerMinute: number;
 }
 
-/** Valor inicial, na primeira vez que a plataforma sobe. Depois vive no banco. */
+/** Valor inicial na primeira subida; depois vive no banco. */
 function defaultsFromEnv(): EngineSettings {
   return {
     workerConcurrency: Number(process.env.EMAIL_WORKER_CONCURRENCY) || 5,
@@ -38,13 +37,9 @@ function defaultsFromEnv(): EngineSettings {
 }
 
 export class PlatformSettingsService {
-  /**
-   * Cache do que o worker usa. O worker consulta a cada recriação, e a leitura não pode
-   * depender do Mongo estar respondendo naquele instante — se falhar, o envio para.
-   */
+  /** Se o Mongo falhar ao recriar o worker, o cache evita que o envio pare. */
   private cache: EngineSettings | null = null;
 
-  /** Documento atual, criando-o na primeira chamada. */
   private async load(): Promise<IPlatformSettings> {
     const existing = await PlatformSettings.findOne({ key: SINGLETON_KEY });
     if (existing) return existing;
@@ -52,14 +47,13 @@ export class PlatformSettingsService {
     try {
       return await PlatformSettings.create({ key: SINGLETON_KEY, ...defaultsFromEnv() });
     } catch {
-      // Outra instância criou entre o findOne e o create (índice único barrou).
+      // Outra instância criou antes; o índice único barrou esta.
       const created = await PlatformSettings.findOne({ key: SINGLETON_KEY });
       if (!created) throw new Error('Não foi possível carregar os ajustes da plataforma.');
       return created;
     }
   }
 
-  /** Para a tela do superadmin. */
   async get(): Promise<PlatformSettingsView> {
     const doc = await this.load();
     return {
@@ -74,10 +68,6 @@ export class PlatformSettingsService {
     };
   }
 
-  /**
-   * O que o worker precisa. Serve do cache quando possível; se o banco falhar e já
-   * houver cache, devolve o cache em vez de deixar o worker sem configuração.
-   */
   async getEngineSettings(): Promise<EngineSettings> {
     try {
       const doc = await this.load();
@@ -89,7 +79,6 @@ export class PlatformSettingsService {
     }
   }
 
-  /** Invalida o cache — usado quando outra instância avisa que a configuração mudou. */
   invalidate(): void {
     this.cache = null;
   }
@@ -97,8 +86,7 @@ export class PlatformSettingsService {
   async update(input: UpdateSettingsInput, updatedByEmail: string): Promise<PlatformSettingsView> {
     const { workerConcurrency, ratePerMinute } = input;
 
-    // O express-validator já barra o grosso; esta checagem protege quem chama o service
-    // direto (script, job) e mantém a regra junto da regra, não só na borda HTTP.
+    // Repete a validação da rota para proteger quem chama o service direto.
     if (workerConcurrency < CONCURRENCY_MIN || workerConcurrency > CONCURRENCY_MAX) {
       throw new BadRequestError(`Concorrência deve estar entre ${CONCURRENCY_MIN} e ${CONCURRENCY_MAX}.`);
     }
@@ -106,12 +94,11 @@ export class PlatformSettingsService {
       throw new BadRequestError(`Taxa deve estar entre ${RATE_PER_MINUTE_MIN} e ${RATE_PER_MINUTE_MAX} por minuto.`);
     }
 
-    await this.load(); // garante que o documento existe antes do update
+    await this.load();
     await PlatformSettings.updateOne({ key: SINGLETON_KEY }, { workerConcurrency, ratePerMinute, updatedByEmail });
 
     this.cache = { workerConcurrency, ratePerMinute };
 
-    // Avisa todas as instâncias (inclusive esta) a recriarem o worker com a taxa nova.
     await publishSettingsChanged();
 
     return this.get();

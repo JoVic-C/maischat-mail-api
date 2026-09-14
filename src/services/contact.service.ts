@@ -25,7 +25,7 @@ export interface ContactFilters {
   search?: string;
   listId?: string;
   status?: IContact['status'];
-  delivery?: 'delivered' | 'never' | 'undeliverable'; // filtro por entrega
+  delivery?: 'delivered' | 'never' | 'undeliverable';
   page?: number;
   limit?: number;
 }
@@ -46,37 +46,28 @@ export interface ValidatedRow {
 }
 
 /**
- * Classificação de cada linha na validação:
- * - new         → email novo e válido (será criado)
- * - add-to-list → já cadastrado, mas não está na lista de destino (será adicionado)
- * - in-list     → já cadastrado e já está na lista de destino (ignorado)
- * - already     → já cadastrado e nenhuma lista de destino foi escolhida (ignorado)
- * - invalid     → formato, domínio inexistente ou duplicado no próprio CSV (erro)
+ * - new         → email novo e válido
+ * - add-to-list → já cadastrado, fora da lista de destino
+ * - in-list     → já cadastrado e já na lista de destino (ignorado)
+ * - already     → já cadastrado, sem lista de destino escolhida (ignorado)
+ * - invalid     → formato, domínio inexistente ou repetido no arquivo
  */
 export type RowKind = 'new' | 'add-to-list' | 'in-list' | 'already' | 'invalid';
 
-/** Uma linha do CSV depois de classificada, pronta para ser gravada ou recusada. */
 export interface ClassifiedRow extends Required<ValidatedRow> {
   kind: RowKind;
   reason?: string;
 }
 
 /**
- * Estado que atravessa os lotes de uma mesma validação.
- * - mxCache → domínios já resolvidos; sem ele o mesmo domínio seria consultado a
- *   cada lote, e uma lista real repete pouquíssimos domínios milhares de vezes.
- * - seen    → emails já vistos NESTE arquivo; é o que detecta linha repetida.
- *
- * `seen` é a única estrutura que cresce com o tamanho do arquivo: medido, custa
- * ~100 MB de heap para 1 milhão de emails. É o teto prático de uma importação, e a
- * razão de a concorrência do worker de importação ser baixa.
+ * Estado que atravessa os lotes de uma validação. `seen` é a única estrutura que cresce
+ * com o arquivo (~100 MB de heap por milhão de emails) e limita o tamanho da importação.
  */
 export interface ClassifyContext {
   mxCache: Map<string, boolean>;
   seen: Set<string>;
 }
 
-/** Colunas reconhecidas em PT e EN — o resto vira metadata. */
 const COLUMN_ALIASES = {
   email: ['email', 'e-mail', 'e_mail', 'mail'],
   name: ['name', 'nome', 'nome completo', 'full name'],
@@ -84,13 +75,7 @@ const COLUMN_ALIASES = {
   company: ['company', 'empresa', 'organização', 'organizacao'],
 } as const;
 
-/**
- * Colunas que a EXPORTAÇÃO gera só para informação e que a importação deve ignorar.
- *
- * Sem esta lista, reimportar um arquivo exportado guarda "situacao" e "criado em" como
- * campos extras do contato — e a exportação seguinte traria essas chaves de novo, agora
- * duplicando colunas que já existem no cabeçalho. O arquivo sairia malformado.
- */
+/** Colunas informativas da exportação; ignoradas para que reimportar não as vire metadata. */
 const COLUNAS_INFORMATIVAS = ['situacao', 'situação', 'status', 'criado em', 'criado_em', 'created at'];
 
 interface ExistingContact {
@@ -109,7 +94,6 @@ interface NewContactDoc {
 }
 
 export class ContactService {
-  /** Recalcula o contactCount das listas afetadas. Chamado sempre que um vínculo muda. */
   private async syncListCounts(listIds: (Types.ObjectId | string)[]): Promise<void> {
     const unique = [...new Set(listIds.map((id) => String(id)))];
     await Promise.all(
@@ -120,7 +104,6 @@ export class ContactService {
     );
   }
 
-  /** Classifica as colunas da linha: conhecidas viram campos, o resto vira metadata. */
   private mapRow(row: CsvRow) {
     const out = { email: '', name: '', phone: '', company: '', metadata: {} as Record<string, string> };
     for (const [header, value] of Object.entries(row)) {
@@ -133,7 +116,6 @@ export class ContactService {
     return out;
   }
 
-  /** Listagem paginada com busca por email/nome/empresa e filtros por lista e status. */
   async list(filters: ContactFilters = {}): Promise<ContactListResult> {
     const page = Math.max(1, filters.page ?? 1);
     const limit = Math.min(200, Math.max(1, filters.limit ?? 50));
@@ -150,7 +132,6 @@ export class ContactService {
     if (filters.listId) query.lists = filters.listId;
     if (filters.status) query.status = filters.status;
 
-    // Filtro por entrega: entregues (já receberam), nunca entregaram, ou não-entregáveis (bounce).
     if (filters.delivery === 'delivered') query.lastDeliveredAt = { $ne: null };
     else if (filters.delivery === 'never') query.lastDeliveredAt = null;
     else if (filters.delivery === 'undeliverable') query.status = 'bounced';
@@ -164,7 +145,7 @@ export class ContactService {
       Contact.countDocuments(query),
     ]);
 
-    // .lean() ignora getters — descriptografa o telefone manualmente.
+    // .lean() ignora os getters do schema, então o telefone é decifrado aqui.
     const decrypted = contacts.map((c) => ({ ...c, phone: decrypt(c.phone) }));
     return { contacts: decrypted, total, page, limit };
   }
@@ -222,7 +203,6 @@ export class ContactService {
     return contact;
   }
 
-  /** Reativa um contato bloqueado (bounce/descadastro) — volta para 'active'. */
   async reactivate(id: string): Promise<ContactDocument> {
     const contact = await this.getById(id);
     contact.status = 'active';
@@ -231,7 +211,6 @@ export class ContactService {
     return contact;
   }
 
-  /** Cria quando não há id, atualiza quando há (mesmo padrão de List). */
   async save(data: SaveContactInput): Promise<ContactDocument> {
     if (data.id) return this.update(data.id, data);
     return this.create(data);
@@ -244,7 +223,6 @@ export class ContactService {
     await this.syncListCounts(lists);
   }
 
-  /** Exclusão em lote (seleção múltipla na tela). */
   async bulkDelete(ids: string[]): Promise<{ deleted: number }> {
     const contacts = await Contact.find({ _id: { $in: ids } })
       .select('lists')
@@ -256,7 +234,6 @@ export class ContactService {
     return { deleted: result.deletedCount ?? 0 };
   }
 
-  /** Uma query para descobrir quais emails do lote já existem (em vez de um findOne por linha). */
   private async findExistingByEmail(emails: string[]): Promise<Map<string, ExistingContact>> {
     if (!emails.length) return new Map();
     const docs = await Contact.find({ email: { $in: emails } })
@@ -265,7 +242,6 @@ export class ContactService {
     return new Map(docs.map((d) => [d.email, d]));
   }
 
-  /** Resolve o DNS de todos os domínios do lote em paralelo (antes era serial, linha a linha). */
   private async warmDomainCache(emails: string[], cache: Map<string, boolean>): Promise<void> {
     const domains = [...new Set(emails.map((e) => e.split('@')[1]?.toLowerCase()).filter(Boolean))].filter(
       (d) => !cache.has(d)
@@ -274,11 +250,8 @@ export class ContactService {
   }
 
   /**
-   * Vincula contatos já existentes às listas de destino, em uma única escrita.
-   *
-   * `bulkWrite` NÃO passa pelos hooks do plugin tenantScope, então o filtro por
-   * cliente entra à mão aqui. Os _id já vieram de uma query escopada; isto é
-   * defesa em profundidade para o dia em que alguém mudar a origem dos ids.
+   * `bulkWrite` não passa pelos hooks do tenantScope, então o filtro por cliente entra
+   * à mão, como defesa em profundidade.
    */
   private async linkToLists(ops: AnyBulkWriteOperation[]): Promise<void> {
     if (!ops.length) return;
@@ -294,10 +267,9 @@ export class ContactService {
   }
 
   /**
-   * Insere um lote de contatos novos. `insertMany` aplica os setters do schema
-   * (o telefone precisa passar pelo encrypt), então NÃO pode virar bulkWrite cru.
-   * Em caso de corrida (mesmo email inserido concorrentemente) cai num caminho lento
-   * linha a linha só para separar os duplicados do resto.
+   * `insertMany` aplica os setters do schema (o telefone é cifrado), por isso não vira
+   * bulkWrite. Se houver corrida no mesmo email, refaz linha a linha para separar os
+   * duplicados.
    */
   private async insertNew(docs: NewContactDoc[]): Promise<{ inserted: number; duplicates: string[] }> {
     if (!docs.length) return { inserted: 0, duplicates: [] };
@@ -320,20 +292,10 @@ export class ContactService {
     }
   }
 
-  /**
-   * Classifica um lote de linhas do CSV sem gravar nada.
-   *
-   * É o núcleo da validação, extraído para ser chamado em sequência sobre um arquivo
-   * grande: o chamador controla o laço e o que faz com o resultado, então nada além
-   * do lote corrente fica em memória. `ctx` atravessa os lotes porque as duas
-   * estruturas são cumulativas — o cache de DNS evita reconsultar o mesmo domínio, e
-   * `seen` é o que detecta email repetido DENTRO do arquivo.
-   */
+  /** Classifica um lote sem gravar; `ctx` acumula o cache de DNS e os emails já vistos. */
   async classifyBatch(rows: CsvRow[], listIds: string[], ctx: ClassifyContext): Promise<ClassifiedRow[]> {
     const mapped = rows.map((r) => this.mapRow(r));
 
-    // Uma query de existência e uma rodada de DNS para o lote inteiro, em vez de
-    // uma por linha. Só emails com formato válido entram na consulta.
     const lookup = mapped.map((m) => m.email).filter((e) => e && EMAIL_RE.test(e));
     const [existing] = await Promise.all([this.findExistingByEmail(lookup), this.warmDomainCache(lookup, ctx.mxCache)]);
 
@@ -355,7 +317,6 @@ export class ContactService {
         const found = existing.get(email);
 
         if (found) {
-          // Já cadastrado: a classificação depende da lista de destino escolhida.
           if (!listIds.length) {
             kind = 'already';
           } else {
@@ -363,9 +324,6 @@ export class ContactService {
             kind = listIds.some((l) => !current.has(l)) ? 'add-to-list' : 'in-list';
           }
         } else if (!(await domainHasMail(email.split('@')[1] ?? '', ctx.mxCache))) {
-          // O warmDomainCache já resolveu os domínios do lote, então isto é sempre
-          // acerto de cache — mas passa pelo helper para a regra não depender de um
-          // efeito colateral.
           kind = 'invalid';
           reason = 'Domínio inexistente';
         } else {
@@ -380,11 +338,8 @@ export class ContactService {
   }
 
   /**
-   * Grava um lote de linhas JÁ classificadas: cria as novas e vincula as existentes
-   * às listas de destino, sem sobrescrever dados.
-   *
-   * NÃO recalcula o contador das listas — quem processa um arquivo inteiro chama
-   * `syncCounts` uma vez no fim, em vez de uma contagem completa por lote.
+   * Grava um lote já classificado. Não recalcula o contador das listas: quem processa o
+   * arquivo chama `syncCounts` uma vez no fim.
    */
   async importRows(rows: ValidatedRow[], listIds: string[] = []): Promise<{ imported: number; skipped: number }> {
     const valid = rows
@@ -410,7 +365,7 @@ export class ContactService {
               update: { $addToSet: { lists: { $each: toAdd.map((id) => new Types.ObjectId(id)) } } },
             },
           });
-          imported++; // vinculado à(s) nova(s) lista(s)
+          imported++;
         } else {
           skipped++;
         }
@@ -427,12 +382,10 @@ export class ContactService {
     }
 
     await this.linkToLists(linkOps);
-    // Corrida: mesmo email inserido concorrentemente → conta como pulado, sem abortar.
     const { inserted, duplicates } = await this.insertNew(toInsert);
     return { imported: imported + inserted, skipped: skipped + duplicates.length };
   }
 
-  /** Recalcula o contactCount das listas. Chamar uma vez ao fim de uma importação. */
   async syncCounts(listIds: (Types.ObjectId | string)[]): Promise<void> {
     await this.syncListCounts(listIds);
   }

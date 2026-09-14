@@ -4,25 +4,13 @@ import { describe, expect, it } from 'vitest';
 import { getTenantContext, runWithTenant } from '../../config/tenantContext';
 import { comLimiteNaMensagem } from '../../middleware/upload';
 
-/**
- * O contexto do cliente tem que sobreviver ao upload.
- *
- * O multer é dirigido por eventos do stream `req`, criado quando a conexão chega —
- * antes de o tenantContext abrir o escopo. Como o AsyncLocalStorage amarra o contexto
- * ao momento de criação do recurso assíncrono, o callback do upload podia rodar sem
- * cliente ativo, e a primeira query depois disso morria em "Query em modelo
- * multi-tenant sem contexto ativo" — um 500 que parecia defeito do servidor.
- *
- * Em arquivo pequeno o upload termina ainda dentro do escopo e nada acusa; com 1,4 MB,
- * o término cai fora. Por isso o teste força o cenário em vez de depender do tamanho:
- * o handler falso guarda o callback e só o chama DEPOIS que o escopo fechou.
- */
+// O multer segue eventos do `req`, criado antes do escopo do cliente; em upload grande o callback roda fora dele.
+// O handler falso força isso chamando o callback só DEPOIS que o escopo fechou, sem depender do tamanho do arquivo.
 describe('contexto do cliente através do upload', () => {
   const tenantId = new Types.ObjectId();
   const req = {} as Request;
   const res = {} as Response;
 
-  /** Imita o multer: recebe o controle, devolve na mão de quem chamar `terminar`. */
   function multerFalso(): { handler: RequestHandler; terminar: (err?: unknown) => void } {
     let pendente: ((err?: unknown) => void) | undefined;
     return {
@@ -44,8 +32,6 @@ describe('contexto do cliente através do upload', () => {
       });
     });
 
-    // Aqui o `runWithTenant` já retornou: é exatamente onde o multer devolvia o
-    // controle num upload grande.
     expect(getTenantContext()).toBeUndefined();
     terminar();
 
@@ -69,7 +55,6 @@ describe('contexto do cliente através do upload', () => {
     const falha = new Error('falha no upload');
     terminar(falha);
 
-    // O tratamento do erro também precisa do cliente: é ele que decide o que limpar.
     expect(contextoNoNext?.tenantId?.toString()).toBe(tenantId.toString());
     expect(recebido).toBe(falha);
   });

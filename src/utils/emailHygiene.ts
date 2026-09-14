@@ -8,16 +8,14 @@ export async function domainHasMail(domain: string, cache: Map<string, boolean>)
 
   let ok = false;
 
-  // 1) Consulta MX (ideal: confirma que o domínio RECEBE email).
   try {
     const mx = await dns.resolveMx(key);
     if (Array.isArray(mx) && mx.length > 0) ok = true;
   } catch {
-    // segue para o fallback
+    // sem MX: tenta o fallback
   }
 
-  // 2) Fallback: o domínio ao menos existe/resolve? Usa getaddrinfo (dns.lookup),
-  //    que funciona mesmo onde consultas DNS diretas (resolveMx/resolve) são bloqueadas.
+  // `dns.lookup` usa getaddrinfo, que funciona onde consultas DNS diretas são bloqueadas.
   if (!ok) {
     try {
       await dns.lookup(key);

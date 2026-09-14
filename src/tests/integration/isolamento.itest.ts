@@ -3,13 +3,7 @@ import { describe, expect, it } from 'vitest';
 import app from '../../app';
 import { criarCliente, criarContato, criarSuperadmin } from './fabricas';
 
-/**
- * Isolamento entre clientes — a propriedade mais crítica do produto.
- *
- * Um vazamento aqui entrega a base de contatos de um cliente para outro. O teste bate
- * na API de verdade, com token de verdade, porque é assim que a falha aconteceria:
- * não adianta o service estar certo se a rota esquecer o middleware de escopo.
- */
+// Bate na API real: não adianta o service estar certo se a rota esquecer o middleware de escopo.
 describe('isolamento entre clientes', () => {
   it('a listagem só devolve contatos do próprio cliente', async () => {
     const a = await criarCliente('Cliente A');
@@ -40,8 +34,7 @@ describe('isolamento entre clientes', () => {
     const b = await criarCliente('Cliente B');
     const alheio = await criarContato(b.tenant._id, 'contato-do-b@x.com');
 
-    // 404 e não 403: para o cliente A esse registro simplesmente não existe — responder
-    // "proibido" já confirmaria que o id é válido em outro cliente.
+    // 404 e não 403: "proibido" confirmaria que o id existe em outro cliente.
     await request(app).get(`/api/contacts/${alheio._id}`).set(a.auth).expect(404);
   });
 
@@ -58,7 +51,6 @@ describe('isolamento entre clientes', () => {
 
   it('o superadmin precisa dizer em qual cliente está operando', async () => {
     const { auth } = await criarSuperadmin();
-    // Sem o header, a rota de painel não sabe o escopo — e não pode assumir nenhum.
     await request(app).get('/api/contacts').set(auth).expect(400);
   });
 

@@ -53,20 +53,16 @@ export class ListService {
     return list.save();
   }
 
+  /** Remove só o vínculo; os contatos continuam existindo. */
   async remove(id: string): Promise<void> {
     const list = await this.getById(id);
-    // Desvincula a lista de todos os contatos (não apaga os contatos, só remove o vínculo)
     await Contact.updateMany({ lists: id }, { $pull: { lists: id } });
     await list.deleteOne();
   }
 
-  /**
-   * Recalcula o contactCount de todas as listas a partir dos vínculos reais.
-   * Conserta contadores que ficaram dessincronizados (ex.: import interrompido).
-   */
+  /** Corrige contadores dessincronizados (ex.: importação interrompida). */
   async resyncCounts(): Promise<{ updated: number; total: number }> {
     const lists = await List.find().select('_id contactCount').lean();
-    // Uma única agregação conta todos os vínculos por lista (evita N+1).
     const agg = await Contact.aggregate<{ _id: unknown; n: number }>([
       { $unwind: '$lists' },
       { $group: { _id: '$lists', n: { $sum: 1 } } },

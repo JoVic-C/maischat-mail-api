@@ -28,15 +28,11 @@ export interface SmtpCredentials {
 
 export type SafeSmtp = Omit<ISmtpSettings, 'password'> & { id: string };
 
-/** Id sentinela usado quando o envio cai no xMailer (SMTP embutido via .env). */
+/** Id sentinela para o SMTP da plataforma, configurado pelo .env. */
 export const FALLBACK_SMTP_ID = '__xmailer__';
 
 export class SmtpService {
-  /**
-   * SMTP padrão embutido (xMailer), montado a partir do .env.
-   * Usado quando o cliente NÃO configurou nenhum servidor próprio.
-   * Retorna null se o xMailer não estiver definido no ambiente.
-   */
+  /** SMTP da plataforma, usado quando o cliente não tem servidor próprio. */
   getFallbackSmtp(): ISmtpSettings | null {
     const host = process.env.XMAILER_SMTP_HOST;
     const user = process.env.XMAILER_SMTP_USER;
@@ -48,10 +44,7 @@ export class SmtpService {
       name: 'SMTP da plataforma',
       host,
       port,
-      // Derivado da porta, e não fixo em false: a 465 é TLS desde o primeiro byte, e
-      // com `secure: false` a conexão era recusada — o `?? porta === 465` do
-      // buildTransporter não salvava, porque `false` não é ausência de valor.
-      // XMAILER_SMTP_SECURE só é necessária em servidor fora da convenção.
+      // A 465 é TLS direto; `false` explícito aqui anularia a regra do buildTransporter.
       secure: process.env.XMAILER_SMTP_SECURE ? process.env.XMAILER_SMTP_SECURE === 'true' : port === 465,
       user,
       password,
@@ -63,12 +56,12 @@ export class SmtpService {
     } as ISmtpSettings;
   }
 
-  /** Remove a senha antes de expor na API. */
   private toSafe(doc: SmtpSettingsDocument): SafeSmtp {
     const obj = doc.toObject();
     delete (obj as { password?: string }).password;
     return { ...obj, id: String(doc._id) } as SafeSmtp;
   }
+
   private buildTransporter(creds: SmtpCredentials): Transporter {
     return nodemailer.createTransport({
       host: creds.host,
@@ -77,11 +70,8 @@ export class SmtpService {
       auth: { user: creds.user, pass: creds.password },
     });
   }
-  /**
-   * SMTP padrão do cliente no contexto atual, para envio transacional.
-   * Devolve o documento completo (com a senha decifrada pelos getters do schema),
-   * então NÃO exponha o retorno em resposta de API.
-   */
+
+  /** Devolve o documento com a senha decifrada: não exponha em resposta de API. */
   async getDefaultForSending(): Promise<ISmtpSettings | null> {
     return SmtpSettings.findOne({ isDefault: true });
   }
@@ -102,13 +92,13 @@ export class SmtpService {
 
     if (data.id) {
       doc = await this.getById(data.id);
-      // Whitelist explícita (anti mass-assignment) + edição parcial (só altera o que veio).
+      // Campo a campo, contra mass assignment; senha só é trocada quando enviada.
       if (data.name !== undefined) doc.name = data.name;
       if (data.host !== undefined) doc.host = data.host;
       if (data.port !== undefined) doc.port = data.port;
       if (data.secure !== undefined) doc.secure = data.secure;
       if (data.user !== undefined) doc.user = data.user;
-      if (data.password) doc.password = data.password; // só troca a senha se veio
+      if (data.password) doc.password = data.password;
       if (data.fromName !== undefined) doc.fromName = data.fromName;
       if (data.fromEmail !== undefined) doc.fromEmail = data.fromEmail;
       if (data.isDefault !== undefined) doc.isDefault = data.isDefault;
@@ -131,8 +121,7 @@ export class SmtpService {
   }
 
   async testConnection(creds: SmtpCredentials): Promise<{ ok: true }> {
-    // Transporter descartável (não entra no cache do EmailService): é fechado no finally
-    // para não deixar conexão TCP pendurada a cada clique em "testar".
+    // Fora do cache do EmailService e fechado no finally, para não deixar conexão aberta.
     const transporter = this.buildTransporter(creds);
     try {
       await transporter.verify();

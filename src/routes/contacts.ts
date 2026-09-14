@@ -30,7 +30,7 @@ router.get(
   ctrl.getContacts
 );
 
-// Declarada ANTES de '/:id': na ordem inversa o Express leria 'export' como um id.
+// Antes de '/:id', senão 'export' seria lido como um id.
 router.get(
   '/export',
   query('search').optional().trim(),
@@ -81,18 +81,13 @@ router.post('/:id/reactivate', param('id').isMongoId().withMessage('ID inválido
 
 router.delete('/:id', param('id').isMongoId().withMessage('ID inválido.'), validate, ctrl.deleteContact);
 
-// ── Importação em massa ──
-// O CSV sobe como arquivo e é processado por um worker; a requisição só devolve o id
-// do job. Nenhuma rota daqui carrega linhas de contato no corpo, em nenhum sentido —
-// era isso que limitava o desenho anterior a arquivos de poucos MB.
+// Importação em massa: o arquivo é processado por um worker e a requisição só devolve o id do job.
 router.post('/import', handleImportUpload, body('listIds').optional(), validate, ctrlImport.startImport);
 
 router.get('/import/open', importProgressLimiter, ctrlImport.listOpenImports);
 
 router.get(
   '/import/:id',
-  // Fora da cota geral (ver rateLimit.ts): é a rota que a tela consulta em intervalo
-  // curto enquanto a importação corre.
   importProgressLimiter,
   param('id').isMongoId().withMessage('ID de importação inválido.'),
   validate,

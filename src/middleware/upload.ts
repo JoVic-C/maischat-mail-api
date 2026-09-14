@@ -62,24 +62,9 @@ export const uploadDoc = multer({
   },
 });
 
-/**
- * Planilha de importação de contatos (.csv ou .xlsx).
- *
- * Vai para IMPORT_DIR (fora de `uploads/`, que é servido estático e sem login — um
- * arquivo aqui é a base de contatos de um cliente) e é gravado em disco em streaming:
- * o arquivo nunca passa inteiro pela memória do processo.
- */
 const IMPORT_MAX_MB = Number(process.env.IMPORT_MAX_MB || 100);
 
-/**
- * Traduz uma falha ao preparar o diretório de destino.
- *
- * Sem isto a exceção do `mkdirSync` sobe crua e vira um "Erro interno." sem pista
- * nenhuma — que é o que se vê quando o volume de dados chega ao container com dono
- * diferente do usuário `node` do Dockerfile, ou quando o disco enche. As duas causas
- * são de infraestrutura, e a mensagem precisa dizer isso para não mandar o operador
- * procurar defeito no arquivo enviado.
- */
+/** Falha de permissão ou disco é de infraestrutura; a mensagem não pode culpar o arquivo. */
 function erroDeDestino(err: unknown, destino: string): Error {
   const codigo = (err as NodeJS.ErrnoException)?.code;
   logSideEffect('upload.destinoIndisponivel', err, { destino, codigo: codigo ?? 'desconhecido' });
@@ -105,9 +90,7 @@ const importStorage = multer.diskStorage({
       cb(erroDeDestino(err, IMPORT_DIR), '');
     }
   },
-  // A extensão é PRESERVADA de propósito: é por ela que o worker decide entre o
-  // leitor de CSV e o de planilha. Forçar `.csv` aqui faria um .xlsx ser lido como
-  // texto e a importação encontrar zero linhas válidas.
+  // A extensão é preservada: é por ela que o worker escolhe entre o leitor de CSV e o de planilha.
   filename: (_req, file, cb) =>
     cb(null, `${crypto.randomBytes(12).toString('hex')}${sheetExtension(file.originalname) || '.csv'}`),
 });
@@ -116,8 +99,7 @@ export const uploadImportFile = multer({
   storage: importStorage,
   limits: { fileSize: IMPORT_MAX_MB * 1024 * 1024, files: 1 },
   fileFilter: (_req, file, cb) => {
-    // A decisão é pela EXTENSÃO, não pelo mimetype: o Windows anuncia .csv como
-    // `application/vnd.ms-excel`, o mesmo do .xls — que não sabemos ler.
+    // Pela extensão: o Windows anuncia .csv com o mesmo mimetype do .xls.
     if (isLegacyExcel(file.originalname)) {
       cb(new BadRequestError('Formato .xls (Excel 97-2003) não é suportado. Salve como .xlsx ou CSV.'));
       return;
@@ -130,23 +112,10 @@ export const uploadImportFile = multer({
   },
 });
 
-/**
- * Envolve um handler do multer para traduzir o estouro de tamanho.
- *
- * O limite só é conhecido aqui: cada upload tem o seu — imagem 5 MB, anexo 10 MB,
- * planilha IMPORT_MAX_MB. Quando o erro chega ao middleware genérico essa informação
- * já se perdeu, e a mensagem de lá dizia "máx. 5 MB" para os três casos.
- */
+/** Envolve o multer para informar o limite de tamanho daquele upload. */
 export function comLimiteNaMensagem(handler: RequestHandler, limiteMb: number): RequestHandler {
   return (req, res, next) => {
-    // Capturado ANTES do multer e restaurado no callback dele.
-    //
-    // O multer é dirigido por eventos do stream `req`, que nasce quando a conexão
-    // chega — antes de o tenantContext abrir o escopo do cliente. Como o
-    // AsyncLocalStorage amarra o contexto ao momento de criação do recurso, o callback
-    // do upload roda SEM cliente ativo, e a primeira query seguinte morre em "Query em
-    // modelo multi-tenant sem contexto ativo". Arquivo pequeno costuma escapar (termina
-    // ainda dentro do escopo); 1,4 MB, não.
+    // O callback do multer roda fora do contexto do cliente (ver runInContext); restaura aqui.
     const contexto = getTenantContext();
 
     handler(req, res, (err: unknown) => {
@@ -161,7 +130,6 @@ export function comLimiteNaMensagem(handler: RequestHandler, limiteMb: number): 
   };
 }
 
-/** Handlers prontos para as rotas, já com a mensagem de tamanho certa. */
 export const handleImageUpload = comLimiteNaMensagem(uploadImage.single('image') as unknown as RequestHandler, 5);
 export const handleDocUpload = comLimiteNaMensagem(uploadDoc.single('file') as unknown as RequestHandler, 10);
 export const handleImportUpload = comLimiteNaMensagem(

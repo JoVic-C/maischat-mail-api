@@ -16,8 +16,7 @@ router.post(
   ctrl.login
 );
 
-// ── Convite (público: quem abre o link ainda não tem sessão) ──
-// O authLimiter protege contra varredura de tokens por força bruta.
+// Convite e recuperação são públicos; o authLimiter freia a varredura de tokens.
 router.get(
   '/invite',
   authLimiter,
@@ -35,8 +34,6 @@ router.post(
   ctrl.acceptInvite
 );
 
-// ── Recuperação de senha (pública) ──
-// authLimiter em todas: são rotas anônimas que tocam conta de usuário.
 router.post(
   '/forgot-password',
   authLimiter,

@@ -7,16 +7,16 @@ import { verifyLink, verifyUnsubscribe } from '../utils/trackingSign';
 
 const PIXEL = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
 
-/** Teto de URLs distintas guardadas em linkStats — blinda o doc contra crescer sem fim (limite 16MB). */
+/** Evita que o documento da campanha cresça sem limite (teto de 16 MB). */
 const MAX_LINK_STATS = 100;
 
-/** Valida o destino de um clique: só http/https absoluto (bloqueia open-redirect, //host e javascript:). */
+/** Só http/https absoluto: bloqueia open redirect, `//host` e `javascript:`. */
 function safeRedirectTarget(raw: string): string {
   try {
     const u = new URL(raw);
     if (u.protocol === 'http:' || u.protocol === 'https:') return u.href;
   } catch {
-    /* url inválida → sem destino */
+    /* URL inválida */
   }
   return '';
 }
@@ -24,7 +24,7 @@ function safeRedirectTarget(raw: string): string {
 export const trackOpen = async (req: Request, res: Response): Promise<void> => {
   try {
     const { c: campaignId, id: sendLogId } = req.params;
-    // Atômico: só o 1º open reivindica (openCount 0→1) e conta na campanha — evita superconta sob concorrência.
+    // Só a primeira abertura conta na campanha; o filtro openCount: 0 evita contagem dupla em concorrência.
     const first = await SendLog.findOneAndUpdate(
       { _id: sendLogId, campaignId, openCount: 0 },
       { $inc: { openCount: 1 }, $set: { openedAt: new Date() } }
@@ -33,7 +33,6 @@ export const trackOpen = async (req: Request, res: Response): Promise<void> => {
       await SendLog.updateOne({ _id: sendLogId, status: 'sent' }, { $set: { status: 'opened' } });
       await Campaign.updateOne({ _id: campaignId }, { $inc: { 'stats.opened': 1 } });
     } else {
-      // opens seguintes (ou id inexistente): só incrementa o contador do log
       await SendLog.updateOne({ _id: sendLogId, campaignId }, { $inc: { openCount: 1 } });
     }
   } catch (err) {
@@ -49,13 +48,11 @@ export const trackClick = async (req: Request, res: Response): Promise<void> => 
   const { c: campaignId, id: sendLogId } = req.params;
   const rawUrl = typeof req.query.url === 'string' ? req.query.url : '';
   const sig = typeof req.query.sig === 'string' ? req.query.sig : '';
-  // Destino válido SÓ se for http/https E a assinatura conferir — só redirecionamos para
-  // links que nós mesmos assinamos ao montar o email (fecha o open-redirect por completo).
+  // Só redireciona para links assinados na montagem do email.
   const candidate = safeRedirectTarget(rawUrl);
   const safeUrl = candidate && verifyLink(campaignId, sendLogId, rawUrl, sig) ? candidate : '';
 
   try {
-    // Atômico: só o 1º clique reivindica e conta na campanha.
     const first = await SendLog.findOneAndUpdate(
       { _id: sendLogId, campaignId, clickCount: 0 },
       { $inc: { clickCount: 1 }, $set: { clickedAt: new Date() } }
@@ -67,7 +64,6 @@ export const trackClick = async (req: Request, res: Response): Promise<void> => 
       await SendLog.updateOne({ _id: sendLogId, campaignId }, { $inc: { clickCount: 1 } });
     }
 
-    // Cliques por link — só destinos válidos, e com teto de tamanho no array.
     if (safeUrl) {
       const inc = await Campaign.updateOne(
         { _id: campaignId, 'linkStats.url': safeUrl },
@@ -78,7 +74,7 @@ export const trackClick = async (req: Request, res: Response): Promise<void> => 
           {
             _id: campaignId,
             'linkStats.url': { $ne: safeUrl },
-            [`linkStats.${MAX_LINK_STATS - 1}`]: { $exists: false }, // só adiciona se ainda houver espaço
+            [`linkStats.${MAX_LINK_STATS - 1}`]: { $exists: false },
           },
           { $push: { linkStats: { url: safeUrl, clicks: 1 } } }
         );
@@ -91,7 +87,6 @@ export const trackClick = async (req: Request, res: Response): Promise<void> => 
   res.redirect(safeUrl || '/');
 };
 
-/** Página simples de erro para link de descadastro inválido/adulterado. */
 function invalidUnsubscribePage(res: Response): void {
   res
     .status(400)
@@ -106,18 +101,16 @@ function invalidUnsubscribePage(res: Response): void {
     );
 }
 
-/** GET: página de confirmação — NÃO descadastra (impede que scanner/prefetch cancele por um GET). */
+/** O GET só confirma: descadastrar por GET deixaria scanners e prefetch cancelarem inscrições. */
 export const unsubscribeConfirmPage = (req: Request, res: Response): void => {
   const { c: campaignId, id: sendLogId } = req.params;
   const sig = typeof req.query.sig === 'string' ? req.query.sig : '';
-  // Sem assinatura válida qualquer um que conheça os dois ObjectIds (que vazam em emails
-  // encaminhados) descadastraria o destinatário.
+  // Sem assinatura, quem conhecesse os ids (que vazam em emails encaminhados) descadastraria o destinatário.
   if (!verifyUnsubscribe(campaignId, sendLogId, sig)) {
     invalidUnsubscribePage(res);
     return;
   }
-  // encodeURIComponent blinda contra XSS refletido: os ids vêm da URL (não validados) e
-  // são embutidos no HTML — encodar impede quebrar o atributo com aspas/tags.
+  // Os ids vêm da URL e entram no HTML: encodar impede XSS refletido.
   const action = `/api/tracking/unsubscribe/${encodeURIComponent(campaignId)}/${encodeURIComponent(sendLogId)}?sig=${encodeURIComponent(sig)}`;
   res.set('Content-Type', 'text/html; charset=utf-8');
   res.send(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
@@ -133,11 +126,9 @@ export const unsubscribeConfirmPage = (req: Request, res: Response): void => {
     </body></html>`);
 };
 
-/** POST: efetua o descadastro (idempotente). Chamado pelo botão da página ou pelo one-click (RFC 8058). */
+/** Idempotente. Chamado pelo botão da página ou pelo one-click (RFC 8058). */
 export const trackUnsubscribe = async (req: Request, res: Response): Promise<void> => {
   const { c: campaignId, id: sendLogId } = req.params;
-  // O one-click (RFC 8058) preserva a query string do List-Unsubscribe; o form da página
-  // de confirmação repassa a mesma assinatura.
   const sig = typeof req.query.sig === 'string' ? req.query.sig : '';
   if (!verifyUnsubscribe(campaignId, sendLogId, sig)) {
     invalidUnsubscribePage(res);
@@ -145,7 +136,6 @@ export const trackUnsubscribe = async (req: Request, res: Response): Promise<voi
   }
 
   try {
-    // Idempotente: só conta no 1º descadastro (evita inflar por reload).
     const log = await SendLog.findOneAndUpdate(
       { _id: sendLogId, campaignId, status: { $ne: 'unsubscribed' } },
       { $set: { status: 'unsubscribed' } }

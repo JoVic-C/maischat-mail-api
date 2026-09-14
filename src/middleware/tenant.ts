@@ -3,13 +3,10 @@ import { runAsSystem, runWithTenant } from '../config/tenantContext';
 import Tenant from '../models/Tenant';
 
 /**
- * Abre o contexto de tenant da requisição. Usar SEMPRE depois do requireAuth:
- * daqui para baixo, toda query em modelo multi-tenant sai filtrada pelo cliente.
+ * Abre o contexto do cliente; sempre depois do requireAuth.
  *
- * - usuário comum/admin → o tenant é o do próprio usuário; ele não escolhe.
- * - superadmin          → precisa dizer em qual cliente está operando, pelo
- *                         header `X-Tenant-Id`. Sem isso, só as rotas de
- *                         administração da plataforma (/api/tenants) funcionam.
+ * - usuário e admin → o cliente do próprio usuário
+ * - superadmin      → o cliente informado no header `X-Tenant-Id`
  */
 export const tenantContext: RequestHandler = async (req, res, next) => {
   const user = req.user;
@@ -48,11 +45,8 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
 };
 
 /**
- * Abre o contexto em modo SYSTEM (sem escopo de cliente).
- *
- * Só para rotas que legitimamente não têm um cliente na entrada e cujo controle de
- * acesso é outro: tracking público (assinatura HMAC + ids do envio) e webhook do
- * xMailer (Bearer token próprio). Nunca use numa rota do painel.
+ * Sem escopo de cliente, para rotas cujo controle de acesso é outro: tracking público
+ * (assinatura HMAC) e webhook (token próprio). Nunca numa rota do painel.
  */
 export const systemContext: RequestHandler = (_req, _res, next) => {
   runAsSystem(() => next());

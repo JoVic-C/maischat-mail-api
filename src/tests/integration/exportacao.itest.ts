@@ -6,13 +6,6 @@ import Contact from '../../models/Contact';
 import List from '../../models/List';
 import { criarCliente } from './fabricas';
 
-/**
- * Exportação de contatos.
- *
- * É a única funcionalidade que tira a base de dentro do sistema, então tem dois riscos
- * próprios: sair incompleta (perder colunas que vieram do CSV, ou o telefone cifrado) e
- * sair para o cliente errado.
- */
 async function criarLista(tenantId: string, nome: string) {
   return runWithTenant(tenantId, async () => await List.create({ name: nome }));
 }
@@ -21,7 +14,6 @@ async function criarContato(tenantId: string, dados: Record<string, unknown>) {
   return runWithTenant(tenantId, async () => await Contact.create(dados));
 }
 
-/** Quebra o CSV em linhas, ignorando o BOM do início. */
 function linhas(csv: string): string[] {
   return csv.replace(/^﻿/, '').trim().split('\r\n');
 }
@@ -37,7 +29,7 @@ describe('exportação de contatos', () => {
 
     expect(res.headers['content-type']).toContain('text/csv');
     const l = linhas(res.text);
-    expect(l).toHaveLength(3); // cabeçalho + 2 contatos
+    expect(l).toHaveLength(3);
     expect(l[0]).toContain('email;');
     expect(res.text).toContain('ana@x.com');
     expect(res.text).toContain('bruno@x.com');
@@ -54,7 +46,6 @@ describe('exportação de contatos', () => {
       .set(a.auth)
       .expect(200);
 
-    // acento vira forma simples: o nome precisa ser seguro para o sistema de arquivos
     expect(res.headers['content-disposition']).toContain('contatos-farmacias-br-');
   });
 
@@ -94,7 +85,6 @@ describe('exportação de contatos', () => {
   });
 
   it('devolve o telefone LEGÍVEL, não o valor cifrado do banco', async () => {
-    // O telefone é gravado cifrado. Exportar o ciphertext entregaria um arquivo inútil.
     const a = await criarCliente('Cliente A');
     await criarContato(String(a.tenant._id), { email: 'ana@x.com', phone: '11999990001' });
 
@@ -105,7 +95,6 @@ describe('exportação de contatos', () => {
   });
 
   it('traz as colunas extras que vieram do CSV importado', async () => {
-    // Sem isto o arquivo exportado perde dado e não pode ser reimportado inteiro.
     const a = await criarCliente('Cliente A');
     await criarContato(String(a.tenant._id), {
       email: 'ana@x.com',
@@ -125,9 +114,7 @@ describe('exportação de contatos', () => {
   });
 
   it('traz as colunas extras TAMBÉM quando se filtra por lista', async () => {
-    // Regressão: a busca das colunas extras usa aggregate, que — ao contrário do find —
-    // não converte o id de texto para ObjectId. Com string, ela não casava com nada e o
-    // arquivo saía sem as colunas, em silêncio, justo no caso principal.
+    // As colunas extras vêm de um aggregate, que não converte o listId de string para ObjectId como o find.
     const a = await criarCliente('Cliente A');
     const lista = await criarLista(String(a.tenant._id), 'Com metadata');
     await criarContato(String(a.tenant._id), {
@@ -163,11 +150,10 @@ describe('exportação de contatos', () => {
     const listaDoB = await criarLista(String(b.tenant._id), 'Lista do B');
     await criarContato(String(b.tenant._id), { email: 'segredo@x.com', lists: [listaDoB._id] });
 
-    // Sem filtro: o escopo por cliente já barra.
     const tudo = await request(app).get('/api/contacts/export').set(a.auth).expect(200);
     expect(tudo.text).not.toContain('segredo@x.com');
 
-    // Com o id da lista alheia: a lista não existe para o cliente A.
+    // 404: para o cliente A a lista alheia não existe.
     await request(app)
       .get('/api/contacts/export')
       .query({ listId: String(listaDoB._id) })
@@ -176,8 +162,7 @@ describe('exportação de contatos', () => {
   });
 
   it('não repete no cabeçalho uma coluna fixa que também exista como campo extra', async () => {
-    // Reimportar um arquivo exportado guardava 'situacao' como campo extra; a exportação
-    // seguinte traria a mesma coluna duas vezes e o CSV sairia ambíguo.
+    // Reimportar um arquivo exportado grava 'situacao' também como campo extra.
     const a = await criarCliente('Cliente A');
     await criarContato(String(a.tenant._id), {
       email: 'ana@x.com',

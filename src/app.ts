@@ -1,10 +1,6 @@
 /**
- * Aplicação Express — middlewares, rotas e tratamento de erro.
- *
- * Separado do `server.ts` de propósito: importar este arquivo NÃO abre porta, não
- * conecta em banco e não sobe worker. É o que permite os testes de integração
- * levantarem a API em memória (supertest) sem efeito colateral, e o que mantém o
- * bootstrap de produção num lugar só.
+ * Aplicação Express. Separada do `server.ts` para que importá-la não abra porta, não
+ * conecte no banco nem suba worker — é o que os testes de integração usam.
  */
 import cors from 'cors';
 import express, { type Request, type Response } from 'express';
@@ -24,6 +20,7 @@ import listRoutes from './routes/lists';
 import platformMonitorRoutes from './routes/platformMonitor';
 import platformSettingsRoutes from './routes/platformSettings';
 import segmentRoutes from './routes/segments';
+import sendingDomainRoutes from './routes/sendingDomains';
 import smtpRoutes from './routes/smtp';
 import templateRoutes from './routes/templates';
 import tenantRoutes from './routes/tenants';
@@ -48,12 +45,9 @@ function frontendOrigin(): string | null {
   }
 }
 
-// Domínios próprios sempre confiáveis: qualquer subdomínio maischat.io/.com.
-// Só HTTPS: com `credentials: true`, aceitar http permitiria que um atacante na rede
-// (ou um subdomínio servido em texto puro) lesse respostas autenticadas.
+// Só HTTPS: com `credentials: true`, aceitar http exporia respostas autenticadas na rede.
 const TRUSTED_ORIGIN_RE = /^https:\/\/([a-z0-9-]+\.)*maischat\.(io|com)(:\d+)?$/i;
 
-/** Origens de desenvolvimento local — o único fallback aceito fora de produção. */
 const LOCALHOST_RE = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
 
 const allowedOrigins = [
@@ -64,14 +58,13 @@ const allowedOrigins = [
 app.use(
   cors({
     origin(origin: string | undefined, cb: (err: Error | null, allow?: boolean) => void) {
-      if (!origin) return cb(null, true); // curl / webhook / server-to-server
-      const o = origin.replace(/\/+$/, ''); // tira barra final (o Origin nunca tem, mas o .env pode)
+      if (!origin) return cb(null, true); // server-to-server
+      const o = origin.replace(/\/+$/, '');
       if (allowedOrigins.includes(o)) return cb(null, true);
       if (TRUSTED_ORIGIN_RE.test(o)) return cb(null, true);
-      // Fora de produção liberamos APENAS localhost — nunca refletimos uma origem arbitrária,
-      // que com credentials:true daria a qualquer site acesso à sessão do dev.
+      // Nunca refletir origem arbitrária: com credentials, qualquer site leria a sessão.
       if (process.env.NODE_ENV !== 'production' && LOCALHOST_RE.test(o)) return cb(null, true);
-      cb(null, false); // fora da lista → browser bloqueia (sem 500)
+      cb(null, false);
     },
     credentials: true,
   })
@@ -80,56 +73,42 @@ app.use(generalLimiter);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-app.use('/api/auth', authRoutes); // público (login); /me já é protegido internamente
+app.use('/api/auth', authRoutes);
 
-// ── Administração da plataforma (acima dos clientes) ──
+// Administração da plataforma: atravessa clientes, só superadmin.
 app.use('/api/tenants', requireAuth, requireSuperadmin, tenantRoutes);
-// Ajustes do motor de envio: valem para a plataforma inteira, então só o superadmin.
 app.use('/api/platform-settings', requireAuth, requireSuperadmin, platformSettingsRoutes);
-// Operação da plataforma: atravessa clientes (runAsSystem), por isso é só superadmin.
 app.use('/api/platform-monitor', requireAuth, requireSuperadmin, platformMonitorRoutes);
 
-// ── Painel: exigem login (JWT) + contexto de cliente ──
-// O tenantContext abre o escopo: daqui para baixo TODA query sai filtrada pelo
-// cliente do usuário (ver models/plugins/tenantScope).
+// Painel: a partir do tenantContext toda query sai filtrada pelo cliente.
 app.use('/api/dashboard', requireAuth, tenantContext, dashboardRoutes);
 app.use('/api/lists', requireAuth, tenantContext, listRoutes);
 app.use('/api/contacts', requireAuth, tenantContext, contactRoutes);
 app.use('/api/templates', requireAuth, tenantContext, templateRoutes);
 app.use('/api/campaigns', requireAuth, tenantContext, campaignRoutes);
 app.use('/api/smtp', requireAuth, requireAdmin, tenantContext, smtpRoutes);
+app.use('/api/sending-domains', requireAuth, requireAdmin, tenantContext, sendingDomainRoutes);
 app.use('/api/users', requireAuth, requireAdmin, tenantContext, userRoutes);
 app.use('/api/segments', requireAuth, tenantContext, segmentRoutes);
-app.use('/api/bounces', requireAuth, requireAdmin, tenantContext, bounceRoutes); // bloquear contato = só admin
-app.use('/api/upload', requireAuth, uploadRoutes); // upload é arquivo em disco, sem query no banco
+app.use('/api/bounces', requireAuth, requireAdmin, tenantContext, bounceRoutes);
+app.use('/api/upload', requireAuth, uploadRoutes);
 
-// ── Públicas (acessadas por terceiros/destinatários) ──
-// Sem cliente na entrada: rodam em modo system (ver middleware/tenant).
-app.use('/api/tracking', systemContext, trackingRoutes); // pixel/clique/descadastro, no navegador do destinatário
-app.use('/api/webhooks', systemContext, webhookRoutes); // tem token próprio (Bearer do xMailer)
-app.use('/uploads', express.static('uploads')); // imagens dos emails carregam sem login
+// Públicas: sem cliente na entrada, rodam em modo system.
+app.use('/api/tracking', systemContext, trackingRoutes);
+app.use('/api/webhooks', systemContext, webhookRoutes);
+app.use('/uploads', express.static('uploads'));
 
 app.get('/api/health', (_req: Request, res: Response) => {
   res.status(200).json({ status: 'ok', version: APP_VERSION, timestamp: new Date().toISOString() });
 });
 
-/**
- * Nenhuma rota casou.
- *
- * O caminho pedido vai para o LOG, não para a resposta: quem está olhando a tela não
- * tem o que fazer com "GET /api/dashboard/sends?de=...&ate=...", e devolver método,
- * caminho e query string entrega a estrutura interna da API — junto com a entrada do
- * próprio cliente — a quem quer que tenha chamado.
- *
- * Na prática este 404 quase sempre significa painel mais novo que a API, e o `code`
- * existe para o painel poder dizer isso em vez de repetir uma mensagem genérica.
- */
+// O caminho pedido vai para o log, não para a resposta. O `code` deixa o painel avisar
+// que a API está numa versão anterior à dele.
 app.use((req: Request, res: Response) => {
   logWarn('app.rotaInexistente', `${req.method} ${req.originalUrl}`);
   res.status(404).json({ error: 'Recurso não encontrado.', code: 'ROTA_INEXISTENTE' });
 });
 
-// Captura no Sentry antes do nosso handler (que responde 500 sem vazar stack).
 Sentry.setupExpressErrorHandler(app);
 app.use(errorHandler);
 

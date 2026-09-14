@@ -13,7 +13,6 @@ export function startSchedulerWorker(): Worker<ScheduleJob> {
     SCHEDULER_QUEUE_NAME,
     async (job: Job<ScheduleJob>) => {
       logger.info(`⏰ Scheduled dispatch time — campaign ${job.data.campaignId}`);
-      // Sem requisição: o escopo do cliente é reaberto a partir do próprio job.
       await runWithTenant(job.data.tenantId, () => campaignService.start(job.data.campaignId));
     },
     { connection: redisConnection }

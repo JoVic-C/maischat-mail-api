@@ -1,14 +1,7 @@
 /**
- * Leitura de CSV em streaming, linha a linha.
- *
- * Existe em paralelo ao `parseCsv` (que devolve tudo de uma vez e continua servindo
- * a entradas pequenas): um arquivo de 100 MB não cabe em memória como string, e o
- * array de objetos correspondente é ainda maior. Aqui o arquivo nunca é
- * materializado — o consumidor recebe um lote por vez e decide o que guardar.
- *
- * Limitação herdada do parser original: campos entre aspas com quebra de linha
- * DENTRO não são suportados (a unidade de leitura é a linha física). Vale para os
- * dois caminhos, então não é regressão.
+ * Leitura de CSV em streaming, linha a linha, para arquivos que não cabem em memória
+ * (o `parseCsv` continua servindo entradas pequenas). Campos entre aspas com quebra de
+ * linha dentro não são suportados: a unidade de leitura é a linha física.
  */
 import fs from 'node:fs';
 import readline from 'node:readline';

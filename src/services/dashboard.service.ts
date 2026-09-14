@@ -20,8 +20,7 @@ export class DashboardService {
       Contact.countDocuments({ status: 'active' }),
       List.countDocuments(),
       Campaign.countDocuments(),
-      // Os totais saem das métricas já agregadas em Campaign.stats (uma collection pequena),
-      // em vez de varrer o SendLog inteiro — que cresce 1 documento por email enviado.
+      // Soma de Campaign.stats, em vez de varrer o SendLog, que tem um documento por email.
       Campaign.aggregate<{ sent: number; opened: number; clicked: number }>([
         {
           $group: {

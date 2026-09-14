@@ -1,13 +1,6 @@
 /**
- * Relatório de envios da conta, por período.
- *
- * Diferente do relatório de UMA campanha (campaignReport), este atravessa todas as
- * campanhas do cliente e responde "quanto saiu, quanto abriu, quanto falhou" numa
- * janela de tempo — é o que o dashboard mostra.
- *
- * Os números saem de uma agregação sobre o SendLog, e não da soma de `Campaign.stats`,
- * porque só o log tem a DATA de cada envio. As estatísticas da campanha são um total
- * acumulado: não dá para recortar "a semana passada" a partir delas.
+ * Relatório de envios da conta, por período. Agrega o SendLog, e não `Campaign.stats`,
+ * porque só o log tem a data de cada envio.
  */
 
 import { BadRequestError } from '../errors';
@@ -15,28 +8,16 @@ import SendLog from '../models/SendLog';
 
 export type Agrupamento = 'day' | 'week' | 'month';
 
-/**
- * Fuso do recorte.
- *
- * Sem ele o Mongo corta os dias em UTC, e um envio das 21h no horário de Brasília cai
- * no dia seguinte do relatório — o operador compara com o que viu na tela e não bate.
- */
+/** Sem fuso o Mongo corta os dias em UTC e um envio das 21h cai no dia seguinte. */
 const FUSO = 'America/Sao_Paulo';
 
-/**
- * Teto de pontos na série.
- *
- * Protege os dois lados: uma consulta de cinco anos agrupada por dia devolveria
- * milhares de pontos, ilegíveis no gráfico e caros de montar. Passando disso, a
- * resposta é um erro que sugere agrupar mais grosso, em vez de um gráfico inútil.
- */
+/** Evita séries enormes (anos agrupados por dia), ilegíveis e caras de montar. */
 const MAX_PONTOS = 400;
 
-/** Janela padrão quando o pedido não traz datas. */
 const DIAS_PADRAO = 30;
 
 export interface TotaisEnvio {
-  /** Linhas de envio no período — inclui as que ainda não saíram. */
+  /** Inclui os envios que ainda não saíram. */
   registros: number;
   enviados: number;
   abertos: number;
@@ -47,7 +28,6 @@ export interface TotaisEnvio {
 }
 
 export interface PontoEnvio extends TotaisEnvio {
-  /** Início do balde, em ISO. O rótulo é montado na tela, que conhece o idioma. */
   inicio: string;
 }
 
@@ -56,7 +36,7 @@ export interface RelatorioEnvios {
   ate: string;
   agrupamento: Agrupamento;
   totais: TotaisEnvio;
-  /** Percentuais sobre os ENVIADOS, não sobre os registros — é a leitura usual. */
+  /** Percentuais sobre os enviados. */
   taxas: { abertura: number; clique: number; falha: number };
   serie: PontoEnvio[];
 }
@@ -67,14 +47,12 @@ export interface FiltroRelatorio {
   agrupamento?: Agrupamento;
 }
 
-/** Quantos dias cabem num balde — usado só para prever o tamanho da série. */
 const DIAS_POR_BALDE: Record<Agrupamento, number> = { day: 1, week: 7, month: 28 };
 
 function zerado(): TotaisEnvio {
   return { registros: 0, enviados: 0, abertos: 0, clicados: 0, falhas: 0, bounces: 0, descadastros: 0 };
 }
 
-/** O rótulo é o nome que aparece na tela — "de" e "ate" são nomes de parâmetro da API. */
 function parseData(valor: string | undefined, padrao: Date, rotulo: string): Date {
   if (!valor) return padrao;
   const data = new Date(valor);
@@ -83,13 +61,7 @@ function parseData(valor: string | undefined, padrao: Date, rotulo: string): Dat
 }
 
 export class SendReportService {
-  /**
-   * Números do período, agrupados por dia, semana ou mês.
-   *
-   * A consulta sai escopada pelo cliente (plugin tenantScope) e usa o índice composto
-   * {tenantId, createdAt} — sem ele, uma instalação com vários clientes varreria a
-   * janela de todos para responder a de um.
-   */
+  /** Depende do índice {tenantId, createdAt} do SendLog. */
   async gerar(filtro: FiltroRelatorio = {}): Promise<RelatorioEnvios> {
     const agrupamento = filtro.agrupamento ?? 'day';
     if (!['day', 'week', 'month'].includes(agrupamento)) {
@@ -119,13 +91,11 @@ export class SendReportService {
               date: '$createdAt',
               unit: agrupamento,
               timezone: FUSO,
-              // Semana começando na segunda: é como o calendário brasileiro é lido.
               startOfWeek: 'monday',
             },
           },
           registros: { $sum: 1 },
-          // "Enviado" é ter saído de fato — o carimbo de envio, não o status atual,
-          // que já pode ter virado aberto ou clicado.
+          // Pelo carimbo de envio: o status atual pode já ter virado aberto ou clicado.
           enviados: { $sum: { $cond: [{ $ne: ['$sentAt', null] }, 1, 0] } },
           abertos: { $sum: { $cond: [{ $ne: ['$openedAt', null] }, 1, 0] } },
           clicados: { $sum: { $cond: [{ $ne: ['$clickedAt', null] }, 1, 0] } },
@@ -137,8 +107,6 @@ export class SendReportService {
       { $sort: { _id: 1 } },
     ]);
 
-    // Os totais saem da soma dos baldes, em vez de uma segunda agregação: o resultado é
-    // o mesmo e evita percorrer a coleção duas vezes.
     const totais = zerado();
     const serie: PontoEnvio[] = baldes.map((b) => {
       totais.registros += b.registros;

@@ -4,7 +4,7 @@ import { tenantScope } from './plugins/tenantScope';
 export type SendStatus = 'pending' | 'sent' | 'failed' | 'bounced' | 'opened' | 'clicked' | 'unsubscribed';
 
 export interface ISendLog {
-  /** Cliente dono do registro. Preenchido automaticamente pelo plugin tenantScope. */
+  /** Preenchido pelo plugin tenantScope. */
   tenantId?: Types.ObjectId;
   campaignId: Types.ObjectId;
   contactId: Types.ObjectId;
@@ -46,16 +46,12 @@ const sendLogSchema = new Schema<ISendLog>(
 );
 
 sendLogSchema.index({ campaignId: 1, contactId: 1 }, { unique: true });
-// Bounce/webhook busca o último envio de um email — sem este índice é collection scan.
+// Bounce e webhook buscam o último envio de um email.
 sendLogSchema.index({ email: 1, createdAt: -1 });
-// Painel de operação lista as últimas falhas de todos os clientes.
+// Painel de operação: últimas falhas de todos os clientes.
 sendLogSchema.index({ status: 1, updatedAt: -1 });
-// Gráfico de atividade do dashboard filtra por janela de tempo.
 sendLogSchema.index({ createdAt: -1 });
-// O relatório de envios do dashboard filtra por PERÍODO dentro de UM cliente. Sem o
-// composto, o Mongo usa o índice de createdAt acima e depois descarta os documentos
-// dos outros clientes — varrendo, numa instalação compartilhada, a janela inteira de
-// todo mundo para responder a de um só.
+// Relatório de envios por período dentro de um cliente.
 sendLogSchema.index({ tenantId: 1, createdAt: -1 });
 
 sendLogSchema.plugin(tenantScope);

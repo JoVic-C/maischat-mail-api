@@ -81,8 +81,7 @@ export const getCampaignLogs = async (req: Request, res: Response, next: NextFun
       limit: limit ? Number(limit) : undefined,
       status,
     });
-    // O corpo continua sendo o array de logs (contrato que o frontend já consome);
-    // os metadados de paginação vão nos headers.
+    // O corpo continua sendo o array que o painel consome; a paginação vai nos headers.
     res.set('X-Total-Count', String(result.total));
     res.set('X-Page', String(result.page));
     res.set('X-Page-Size', String(result.limit));
@@ -125,12 +124,8 @@ export const unscheduleCampaign = async (req: Request, res: Response, next: Next
 };
 
 /**
- * Relatório de envios. Sai em .xlsx; use ?format=csv para forçar o outro formato.
- *
- * O corpo é escrito em streaming pelo service, então o cabeçalho de resposta já saiu
- * quando um erro pode aparecer no meio. Por isso o try só cobre o caminho ANTES do
- * primeiro write; depois disso a única saída honesta é encerrar a conexão, e o cliente
- * vê um arquivo truncado em vez de um CSV com uma mensagem de erro dentro.
+ * O corpo sai em streaming: depois do primeiro byte os headers já foram enviados, e a
+ * única saída para um erro é encerrar a conexão.
  */
 export const downloadCampaignReport = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {

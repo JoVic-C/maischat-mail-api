@@ -2,12 +2,7 @@ import { Types } from 'mongoose';
 import { describe, expect, it } from 'vitest';
 import { getTenantContext, requireTenantId, runAsSystem, runWithTenant } from '../../config/tenantContext';
 
-/**
- * Este contexto é o substituto do Row Level Security: é ele que o plugin `tenantScope`
- * consulta para filtrar TODA query. Se ele vazar entre execuções, ou devolver escopo
- * onde não deveria, um cliente enxerga a base de outro — a falha mais grave possível
- * neste produto. Daí os testes cobrirem principalmente o que deve FALHAR.
- */
+// Substitui o RLS: o plugin `tenantScope` filtra toda query por este contexto.
 describe('contexto de cliente', () => {
   it('sem contexto ativo, exigir o cliente lança em vez de devolver vazio', () => {
     // O comportamento importa: devolver null aqui faria a query rodar SEM filtro.
@@ -24,8 +19,7 @@ describe('contexto de cliente', () => {
   });
 
   it('aceita o cliente como string e normaliza para ObjectId', () => {
-    // O superadmin opera via header X-Tenant-Id, que chega como string. Sem normalizar,
-    // o filtro nunca casa com o campo ObjectId e a query devolve VAZIO em silêncio.
+    // O X-Tenant-Id do superadmin chega como string; sem normalizar, o filtro não casa com o ObjectId.
     const id = new Types.ObjectId().toString();
     runWithTenant(id, () => {
       expect(requireTenantId()).toBeInstanceOf(Types.ObjectId);

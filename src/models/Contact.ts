@@ -5,7 +5,7 @@ import { tenantScope } from './plugins/tenantScope';
 export type ContactStatus = 'active' | 'unsubscribed' | 'bounced';
 
 export interface IContact {
-  /** Cliente dono do registro. Preenchido automaticamente pelo plugin tenantScope. */
+  /** Preenchido pelo plugin tenantScope. */
   tenantId?: Types.ObjectId;
   email: string;
   name: string;
@@ -14,7 +14,8 @@ export interface IContact {
   lists: Types.ObjectId[];
   status: ContactStatus;
   unsubscribedAt: Date | null;
-  lastDeliveredAt: Date | null; // quando um envio para este contato foi aceito com sucesso
+  /** Último envio aceito com sucesso. */
+  lastDeliveredAt: Date | null;
   metadata: Map<string, string>;
   createdAt: Date;
   updatedAt: Date;
@@ -24,7 +25,7 @@ export type ContactDocument = HydratedDocument<IContact>;
 
 const contactSchema = new Schema<IContact>(
   {
-    // Único POR CLIENTE (índice composto abaixo) — dois tenants podem ter o mesmo contato.
+    // Único por cliente (índice composto abaixo).
     email: { type: String, required: true, lowercase: true, trim: true },
     name: { type: String, default: '', trim: true },
     phone: { type: String, default: '', trim: true, set: encrypt, get: decrypt },

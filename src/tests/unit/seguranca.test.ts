@@ -51,8 +51,6 @@ describe('formatos de planilha aceitos', () => {
   });
 
   it('identifica o .xls antigo em separado, para dar mensagem específica', () => {
-    // "arquivo inválido" não ajuda quem subiu uma planilha de verdade; a mensagem
-    // precisa dizer para salvar como .xlsx.
     expect(isLegacyExcel('base.xls')).toBe(true);
     expect(isSupportedSheet('base.xls')).toBe(false);
   });

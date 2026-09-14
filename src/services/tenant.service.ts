@@ -14,9 +14,8 @@ import tenantWelcomeService, { type TenantWelcomeResult } from './tenantWelcome.
 export interface CreateTenantInput {
   name: string;
   slug: string;
-  /** Primeiro administrador do cliente — criado junto, senão ninguém consegue entrar. */
   adminEmail: string;
-  /** Opcional: sem senha, o admin recebe um convite e define a própria. É o padrão. */
+  /** Sem senha, o admin recebe um convite e define a própria. */
   adminPassword?: string;
   adminName?: string;
 }
@@ -24,7 +23,7 @@ export interface CreateTenantInput {
 export interface UpdateTenantInput {
   name?: string;
   isActive?: boolean;
-  /** Fatia da capacidade do motor reservada a este cliente. 0 = sem limite próprio. */
+  /** 0 significa sem limite próprio. */
   sendingLimits?: { concurrency?: number; ratePerMinute?: number };
 }
 
@@ -40,15 +39,11 @@ export class TenantService {
   async list(): Promise<TenantSummary[]> {
     const tenants = await Tenant.find().sort({ createdAt: -1 }).lean();
 
-    // Os contadores de cada cliente são lidos DENTRO do escopo dele — a mesma
-    // barreira que vale para o resto da aplicação vale aqui.
     return Promise.all(
       tenants.map(async (t) => {
         const id = String(t._id);
         const [users, contacts, lists, campaigns] = await Promise.all([
           User.countDocuments({ tenantId: t._id }),
-          // O await precisa acontecer DENTRO do runWithTenant: uma Query do Mongoose
-          // só executa quando é aguardada, e fora do escopo o contexto já não existe.
           runWithTenant(id, async () => await Contact.countDocuments()),
           runWithTenant(id, async () => await List.countDocuments()),
           runWithTenant(id, async () => await Campaign.countDocuments()),
@@ -74,7 +69,6 @@ export class TenantService {
     return tenant;
   }
 
-  /** Cria o cliente e o primeiro admin dele, numa operação só. */
   async create(
     data: CreateTenantInput
   ): Promise<{ id: string; slug: string; adminEmail: string; welcome?: TenantWelcomeResult }> {
@@ -89,21 +83,18 @@ export class TenantService {
       admin = await User.create({
         tenantId: tenant._id,
         email: adminEmail,
-        // Sem senha informada, entra um placeholder aleatório que o convite substitui.
         password: data.adminPassword || crypto.randomBytes(32).toString('base64url'),
         name: data.adminName ?? '',
         role: 'admin',
         isActive: true,
       });
     } catch (err) {
-      // Sem admin o cliente nasce inacessível — desfaz para não deixar lixo.
+      // Sem admin o cliente ficaria inacessível.
       await tenant.deleteOne();
       throw err;
     }
 
-    // Fora do try acima de propósito: o cliente já existe e está utilizável. Falha no
-    // email de boas-vindas é registrada e devolvida como `emailSent: false`, nunca
-    // desfaz a criação — antes disso, uma falha aqui apagava o cliente recém-criado.
+    // Fora do try acima: falha no email de boas-vindas não desfaz um cliente já utilizável.
     let welcome: TenantWelcomeResult | undefined;
     try {
       welcome = await tenantWelcomeService.send(tenant, admin, Boolean(data.adminPassword));
@@ -119,8 +110,7 @@ export class TenantService {
     if (data.name !== undefined) tenant.name = data.name;
 
     if (data.sendingLimits) {
-      // Os limites do cliente são uma FATIA da piscina do motor: não podem prometer
-      // mais do que a plataforma inteira comporta, senão viram número decorativo.
+      // Os limites do cliente são uma fatia do motor; não podem passar do total da plataforma.
       const engine = await platformSettingsService.getEngineSettings();
       const { concurrency, ratePerMinute } = data.sendingLimits;
 
@@ -144,7 +134,6 @@ export class TenantService {
 
     if (data.isActive !== undefined && data.isActive !== tenant.isActive) {
       tenant.isActive = data.isActive;
-      // Desativar o cliente derruba as sessões de todos os usuários dele.
       if (!data.isActive) await User.updateMany({ tenantId: tenant._id }, { $inc: { tokenVersion: 1 } });
     }
 
@@ -152,10 +141,7 @@ export class TenantService {
     return tenant;
   }
 
-  /**
-   * Exclusão de cliente é destrutiva e irreversível: exige confirmação explícita
-   * do slug, para não apagar a base errada.
-   */
+  /** Irreversível: exige repetir o slug e o cliente já desativado. */
   async remove(id: string, confirmSlug: string): Promise<{ deleted: Record<string, number> }> {
     const tenant = await this.getById(id);
     if (confirmSlug !== tenant.slug) {

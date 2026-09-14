@@ -1,17 +1,12 @@
 /**
- * Rotação da ENCRYPTION_KEY.
+ * Rotação da ENCRYPTION_KEY: reescreve os campos cifrados (Contact.phone,
+ * SmtpSettings.password) com a chave atual. Idempotente.
  *
- * Reescreve todos os campos cifrados (Contact.phone, SmtpSettings.password) com a chave
- * ATUAL. Os que já estão na chave atual são pulados, então o script é idempotente e pode
- * ser rodado de novo com segurança.
- *
- * Procedimento:
  *   1. ENCRYPTION_KEY_PREVIOUS = chave antiga; ENCRYPTION_KEY = chave nova
  *   2. npm run rotate:encryption
  *   3. remover ENCRYPTION_KEY_PREVIOUS do ambiente
  *
- * ⚠️ Faça backup do banco antes. Um valor que nenhuma das duas chaves abre é reportado
- *    e deixado intacto (nunca sobrescrito por vazio).
+ * Faça backup antes. Valor que nenhuma das chaves abre é reportado e mantido intacto.
  */
 import 'dotenv/config';
 import mongoose from 'mongoose';
@@ -27,7 +22,6 @@ interface Report {
   unreadable: number;
 }
 
-/** Reescreve um campo cifrado de uma collection, documento a documento. */
 async function rotateField(
   label: string,
   model: typeof Contact | typeof SmtpSettings,
@@ -35,17 +29,16 @@ async function rotateField(
 ): Promise<Report> {
   const report: Report = { scanned: 0, rotated: 0, unreadable: 0 };
 
-  // .lean() ignora os getters do schema — lemos o valor CRU, exatamente como está no banco.
+  // Direto na collection, sem os getters do schema: o valor cru, como está no banco.
   const cursor = model.collection.find({ [field]: { $regex: '^enc:v1:' } }, { projection: { [field]: 1 } });
 
   for await (const doc of cursor) {
     report.scanned++;
     const raw = String(doc[field] ?? '');
-    if (isCurrentKey(raw)) continue; // já está na chave nova
+    if (isCurrentKey(raw)) continue;
 
     const plain = decrypt(raw);
     if (!plain) {
-      // Nem a chave atual nem a anterior abriram — não sobrescreve, só reporta.
       report.unreadable++;
       logger.warn(`${label}: valor ilegível em ${String(doc._id)} — mantido como está`);
       continue;

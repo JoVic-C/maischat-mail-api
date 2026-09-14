@@ -6,8 +6,7 @@ import { CONCURRENCY_MAX, CONCURRENCY_MIN, RATE_PER_MINUTE_MAX, RATE_PER_MINUTE_
 
 const router = Router();
 
-// Administração da plataforma — o server.ts já exige requireSuperadmin.
-// Estas rotas NÃO passam pelo tenantContext: os ajustes valem para todos os clientes.
+// Ajustes da plataforma inteira: sem tenantContext.
 
 router.get('/', ctrl.getPlatformSettings);
 

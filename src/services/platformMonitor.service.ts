@@ -8,11 +8,8 @@ import { emailQueue } from '../queue/email.queue';
 import { schedulerQueue } from '../queue/scheduler.queue';
 
 /**
- * Visão de operação da plataforma inteira (só superadmin).
- *
- * Todas as leituras aqui atravessam clientes, então rodam em `runAsSystem()` — o
- * modo sem escopo. É legítimo porque a rota já exige superadmin, mas é a ÚNICA
- * parte do painel que faz isso: em qualquer outro lugar, query sem escopo é bug.
+ * Operação da plataforma inteira, só para superadmin. As leituras atravessam clientes em
+ * `runAsSystem()`; em qualquer outra parte do painel, query sem escopo é bug.
  */
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -22,7 +19,6 @@ export interface QueueState {
   active: number;
   delayed: number;
   failed: number;
-  /** Campanhas com disparo agendado para o futuro. */
   scheduled: number;
 }
 
@@ -34,9 +30,7 @@ export interface TenantActivity {
   sent: number;
   failed: number;
   bounced: number;
-  /** Campanhas em envio agora. */
   sending: number;
-  /** Campanhas pausadas (inclusive as auto-pausadas por excesso de erro). */
   paused: number;
 }
 
@@ -56,7 +50,6 @@ interface AuditContext {
 }
 
 export class PlatformMonitorService {
-  /** Estado da fila. Vem do Redis, não do Mongo — é a leitura mais barata e a mais reveladora. */
   async getQueueState(): Promise<QueueState> {
     const [email, scheduler] = await Promise.all([
       emailQueue.getJobCounts('waiting', 'active', 'delayed', 'failed'),
@@ -72,10 +65,7 @@ export class PlatformMonitorService {
     };
   }
 
-  /**
-   * Atividade das últimas 24h por cliente. Só números — nenhum endereço de
-   * destinatário sai daqui, então esta parte não expõe dado pessoal de terceiros.
-   */
+  /** Só números: nenhum endereço de destinatário sai daqui. */
   async getTenantActivity(hours = 24): Promise<TenantActivity[]> {
     const since = new Date(Date.now() - (hours / 24) * DAY_MS);
 
@@ -108,36 +98,28 @@ export class PlatformMonitorService {
       const porEnvio = new Map(envios.map((e) => [String(e._id), e]));
       const porCampanha = new Map(campanhas.map((c) => [String(c._id), c]));
 
-      return (
-        tenants
-          .map((t) => {
-            const id = String(t._id);
-            const e = porEnvio.get(id);
-            const c = porCampanha.get(id);
-            return {
-              tenantId: id,
-              name: t.name,
-              slug: t.slug,
-              isActive: t.isActive,
-              sent: e?.sent ?? 0,
-              failed: e?.failed ?? 0,
-              bounced: e?.bounced ?? 0,
-              sending: c?.sending ?? 0,
-              paused: c?.paused ?? 0,
-            };
-          })
-          // Quem está enviando ou falhando aparece primeiro: é onde o operador olha.
-          .sort((a, b) => b.sending - a.sending || b.failed + b.bounced - (a.failed + a.bounced) || b.sent - a.sent)
-      );
+      return tenants
+        .map((t) => {
+          const id = String(t._id);
+          const e = porEnvio.get(id);
+          const c = porCampanha.get(id);
+          return {
+            tenantId: id,
+            name: t.name,
+            slug: t.slug,
+            isActive: t.isActive,
+            sent: e?.sent ?? 0,
+            failed: e?.failed ?? 0,
+            bounced: e?.bounced ?? 0,
+            sending: c?.sending ?? 0,
+            paused: c?.paused ?? 0,
+          };
+        })
+        .sort((a, b) => b.sending - a.sending || b.failed + b.bounced - (a.failed + a.bounced) || b.sent - a.sent);
     });
   }
 
-  /**
-   * Últimas falhas e bounces de TODOS os clientes, com o endereço do destinatário.
-   *
-   * Este é o ponto onde a plataforma enxerga dado pessoal de contatos que pertencem
-   * aos clientes — por isso todo acesso é registrado em AuditLog.
-   */
+  /** Expõe endereços de contatos dos clientes, por isso todo acesso vai para o AuditLog. */
   async getRecentFailures(limit: number, audit: AuditContext): Promise<FailureRow[]> {
     const capped = Math.min(200, Math.max(1, limit));
 

@@ -4,7 +4,7 @@ import { decrypt, encrypt } from '../utils/fieldCrypto';
 import { tenantScope } from './plugins/tenantScope';
 
 export interface ISmtpSettings {
-  /** Cliente dono do registro. Preenchido automaticamente pelo plugin tenantScope. */
+  /** Preenchido pelo plugin tenantScope. */
   tenantId?: Types.ObjectId;
   name: string;
   host: string;
@@ -15,7 +15,8 @@ export interface ISmtpSettings {
   fromName: string;
   fromEmail: string;
   isDefault: boolean;
-  dailyLimit: number; //0 = sem limite
+  /** 0 significa sem limite. */
+  dailyLimit: number;
   hourlyLimit: number;
   createdAt: Date;
   updatedAt: Date;

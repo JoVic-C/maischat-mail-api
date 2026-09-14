@@ -46,9 +46,7 @@ jobs:
     name: Testes de integração (API)
     runs-on: ubuntu-latest
 
-    # Sobem Mongo e Redis de verdade: os testes batem na API real, com o plugin de
-    # isolamento por cliente ativo. Um mock aqui esconderia justamente a falha que
-    # esta suíte existe para pegar.
+    # Mongo e Redis reais: um mock esconderia justamente as falhas de isolamento por cliente.
     services:
       mongo:
         image: mongo:7
@@ -82,7 +80,7 @@ jobs:
         run: npm run test:integration
         env:
           MONGO_URI_TEST: mongodb://localhost:27017/mailpulse_test
-          REDIS_URL: redis://localhost:6379
+          REDIS_URL_TEST: redis://localhost:6379/15
           JWT_SECRET: segredo-de-ci-nao-usar-em-producao
           ENCRYPTION_KEY: chave-de-ci-nao-usar-em-producao
 

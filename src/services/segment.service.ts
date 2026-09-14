@@ -10,19 +10,19 @@ export interface SaveSegmentInput {
   matchAll?: boolean;
 }
 
-/** Campos que uma regra pode filtrar (whitelist de segurança). */
+/** Campos que uma regra pode filtrar; os demais são ignorados. */
 const ALLOWED_FIELDS = ['company', 'status', 'name', 'email'];
 
 export class SegmentService {
   private ruleToQuery(rule: ISegmentRule): Record<string, unknown> {
     const isMetadata = rule.field.startsWith('metadata.');
     if (!isMetadata && !ALLOWED_FIELDS.includes(rule.field)) {
-      return {}; // regra com campo inválido é ignorada
+      return {};
     }
     if (rule.operator === 'contains') {
       return { [rule.field]: { $regex: escapeRegex(rule.value), $options: 'i' } };
     }
-    return { [rule.field]: rule.value }; // equals
+    return { [rule.field]: rule.value };
   }
 
   buildQuery(segment: Pick<ISegment, 'rules' | 'matchAll'>): Record<string, unknown> {

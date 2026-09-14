@@ -6,11 +6,8 @@ import contactImportService, { safeUnlink } from '../services/contactImport.serv
 import { logCtrlError } from '../utils/logger';
 
 /**
- * O cliente da requisição em curso, que o worker usa para reabrir o escopo.
- *
- * Vem do contexto aberto pelo middleware tenantContext, e não do tenantId do usuário:
- * para o superadmin, que opera outro cliente pelo header X-Tenant-Id, os dois valores
- * são diferentes — e o job precisa rodar no cliente que ele está operando.
+ * Cliente em que o job deve rodar. Vem do contexto e não do usuário: o superadmin opera
+ * outro cliente pelo header X-Tenant-Id.
  */
 function tenantOf(_req: Request): string {
   const tenantId = requireTenantId();
@@ -18,15 +15,12 @@ function tenantOf(_req: Request): string {
   return String(tenantId);
 }
 
-/**
- * Recebe o arquivo e devolve o id do job. Nada é validado aqui: a requisição
- * termina em milissegundos, e o trabalho pesado fica com o worker.
- */
+/** Só recebe o arquivo e enfileira; a validação fica com o worker. */
 export const startImport = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     if (!req.file) throw new BadRequestError('Envie o arquivo CSV no campo "file".');
 
-    // Vem como campo de formulário (multipart), então chega string — não array.
+    // Campo de formulário multipart: chega como string.
     const raw = req.body.listIds;
     const listIds: string[] = Array.isArray(raw) ? raw : raw ? String(raw).split(',').filter(Boolean) : [];
 
@@ -41,16 +35,13 @@ export const startImport = async (req: Request, res: Response, next: NextFunctio
     await enqueueValidation(tenantOf(req), job.id);
     res.status(202).json({ message: 'Arquivo recebido. Validando...', id: job.id, status: job.status });
   } catch (err) {
-    // O multer já gravou o arquivo antes de chegarmos aqui. Se o job não nasceu, a
-    // limpeza periódica nunca o encontraria — ela varre a partir dos jobs — e o CSV
-    // ficaria em disco para sempre.
+    // Sem job, a limpeza periódica nunca acharia o arquivo que o multer já gravou.
     if (req.file) safeUnlink(req.file.path);
     logCtrlError('contactImport.startImport', req, err);
     next(err);
   }
 };
 
-/** Progresso agregado. É o que a tela consulta em intervalo curto. */
 export const getImportStatus = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     res.json(await contactImportService.getStatus(req.params.id));
@@ -60,7 +51,6 @@ export const getImportStatus = async (req: Request, res: Response, next: NextFun
   }
 };
 
-/** Importações ainda abertas — deixa a tela reencontrar um job depois de um F5. */
 export const listOpenImports = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     res.json(await contactImportService.listOpen());
@@ -91,7 +81,6 @@ export const cancelImport = async (req: Request, res: Response, next: NextFuncti
   }
 };
 
-/** Relatório dos recusados, montado a partir do resultado guardado no servidor. */
 export const downloadInvalid = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const { format, buffer } = await contactImportService.buildInvalidReport(req.params.id);

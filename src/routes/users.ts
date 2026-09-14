@@ -5,8 +5,6 @@ import { EMAIL_NORMALIZE, validate } from '../middleware/validate';
 
 const router = Router();
 
-// Todo este módulo já entra atrás de requireAuth + requireAdmin no server.ts.
-
 router.get('/', ctrl.getUsers);
 
 router.post(

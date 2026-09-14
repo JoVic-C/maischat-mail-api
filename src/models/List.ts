@@ -5,7 +5,7 @@ import { tenantScope } from './plugins/tenantScope';
 export type ListType = 'public' | 'private';
 
 export interface IList {
-  /** Cliente dono do registro. Preenchido automaticamente pelo plugin tenantScope. */
+  /** Preenchido pelo plugin tenantScope. */
   tenantId?: Types.ObjectId;
   name: string;
   description: string;

@@ -2,7 +2,6 @@ import type { NextFunction, Request, Response } from 'express';
 import platformMonitorService from '../services/platformMonitor.service';
 import { logCtrlError } from '../utils/logger';
 
-/** Fila + atividade por cliente. Só números, sem endereço de destinatário. */
 export const getOverview = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const [queue, tenants] = await Promise.all([

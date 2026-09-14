@@ -1,16 +1,12 @@
 /**
- * Migração para multi-tenancy.
- *
- * Move a base atual (que não tinha dono) para um cliente padrão:
- *   1. cria o tenant (slug de MIGRATION_TENANT_SLUG, padrão "principal");
- *   2. preenche `tenantId` em todo documento que ainda não tem;
- *   3. vincula os usuários existentes a esse tenant (menos os superadmins);
+ * Migração da base sem dono para um cliente padrão:
+ *   1. cria o cliente (slug de MIGRATION_TENANT_SLUG, padrão "principal");
+ *   2. preenche `tenantId` nos documentos que não têm;
+ *   3. vincula os usuários existentes, exceto superadmins;
  *   4. troca o índice único de `contacts.email` pelo composto {tenantId, email}.
  *
- * Idempotente: rodar de novo não duplica nada. Escreve direto nas collections
- * de propósito — o plugin de escopo recusaria documentos ainda sem tenantId.
- *
- * ⚠️ Faça backup antes. Rode com a API PARADA.
+ * Idempotente. Escreve direto nas collections porque o plugin recusaria documentos sem
+ * tenantId. Faça backup antes e rode com a API parada.
  *
  *   npm run migrate:multi-tenant
  */
@@ -20,7 +16,6 @@ import { getMongoUri } from '../config/db';
 import Tenant from '../models/Tenant';
 import { logger } from '../utils/logger';
 
-/** Collections que passam a ter dono. */
 const SCOPED_COLLECTIONS = [
   'contacts',
   'lists',
@@ -39,10 +34,6 @@ async function backfill(tenantId: mongoose.Types.ObjectId): Promise<void> {
   }
 }
 
-/**
- * O índice antigo torna `email` único na base inteira — o que impediria dois
- * clientes de terem o mesmo contato. Trocamos pelo composto com tenantId.
- */
 async function fixContactIndexes(): Promise<void> {
   const contacts = mongoose.connection.collection('contacts');
   const indexes = await contacts.indexes();

@@ -8,19 +8,16 @@ import { IMPORT_QUEUE_NAME, type ImportJobData, importQueue } from './import.que
 
 let worker: Worker<ImportJobData> | null = null;
 
-/** Nome fixo do job periódico de limpeza (o BullMQ usa o nome para não duplicá-lo). */
 const CLEANUP_JOB = 'cleanup-expired';
 
 /**
- * Concorrência baixa de propósito: cada job lê um arquivo inteiro e escreve no Mongo
- * em lotes. Processar muitos em paralelo não acelera nada — dividiria a mesma banda
- * de banco e disco — e multiplicaria o pico de memória do conjunto de emails já vistos.
+ * Baixa de propósito: jobs em paralelo dividiriam a mesma banda de banco e disco e
+ * multiplicariam o pico de memória do conjunto de emails já vistos.
  */
 const CONCURRENCY = Number(process.env.IMPORT_WORKER_CONCURRENCY || 2);
 
 async function handleJob(job: Job<ImportJobData>): Promise<void> {
   if (job.name === CLEANUP_JOB) {
-    // Atravessa clientes: os arquivos vencidos de todos eles são lixo igual.
     await runAsSystem(() => contactImportService.cleanupExpired());
     return;
   }
@@ -53,8 +50,7 @@ export async function startImportWorker(): Promise<Worker<ImportJobData>> {
     logSideEffect('importWorker.failed', err, { importJobId: job.data.importJobId, action: job.data.action });
     captureError(err, { scope: 'importWorker.failed', importJobId: job.data.importJobId });
 
-    // A tela lê o motivo no próprio ImportJob — sem isto o job ficaria eternamente
-    // "validando" para o usuário, com a falha visível só no log.
+    // A tela lê o motivo no ImportJob; sem isto ficaria "validando" para sempre.
     if (!job.data.tenantId || !job.data.importJobId) return;
     try {
       await runWithTenant(job.data.tenantId, () =>
@@ -65,8 +61,7 @@ export async function startImportWorker(): Promise<Worker<ImportJobData>> {
     }
   });
 
-  // Limpeza de hora em hora. `jobId` fixo + repeat garante uma única agenda, mesmo
-  // que o processo reinicie ou suba mais de uma réplica.
+  // `jobId` fixo com repeat mantém uma única agenda entre reinícios e réplicas.
   await importQueue.add(
     CLEANUP_JOB,
     { tenantId: '', importJobId: '', action: 'validate' },

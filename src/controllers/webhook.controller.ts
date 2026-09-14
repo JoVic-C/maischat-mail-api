@@ -30,15 +30,15 @@ export const xmailerWebhook = async (req: Request, res: Response, next: NextFunc
     if (email) {
       if (status === 0) {
         logger.warn(`📮 xMailer HARD bounce → ${email}: ${mensagem || ''} (msgid ${msgid || '-'})`);
-        await bounceService.processBounce(email, undefined, mensagem || 'Hard bounce (xMailer)'); // marca contato inválido
+        await bounceService.processBounce(email, undefined, mensagem || 'Hard bounce (xMailer)');
       } else if (status === 2) {
         logger.warn(`📮 xMailer SOFT bounce → ${email}: ${mensagem || ''}`);
-        await bounceService.processSoftBounce(email, mensagem); // só registra
+        await bounceService.processSoftBounce(email, mensagem);
       }
-      // status === 1 (entregue) → apenas confirmamos abaixo
     }
 
-    res.json({ ok: true }); // o xMailer exige 2xx, senão re-tenta
+    // O xMailer retenta enquanto não receber 2xx.
+    res.json({ ok: true });
   } catch (err) {
     logCtrlError('webhook.xmailer', req, err);
     next(err);

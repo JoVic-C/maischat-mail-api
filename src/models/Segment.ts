@@ -11,7 +11,7 @@ export interface ISegmentRule {
 }
 
 export interface ISegment {
-  /** Cliente dono do registro. Preenchido automaticamente pelo plugin tenantScope. */
+  /** Preenchido pelo plugin tenantScope. */
   tenantId?: Types.ObjectId;
   name: string;
   rules: ISegmentRule[];

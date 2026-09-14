@@ -1,18 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ehConsultaDeProgresso } from '../../middleware/rateLimit';
 
-/**
- * Quais requisições ficam fora da cota geral.
- *
- * A tela de importação consulta o progresso enquanto o worker trabalha. Em intervalo
- * curto, uma única importação longa consumia sozinha as 200 requisições por 15 minutos
- * do limite geral — que é contado por IP —, e a pessoa levava 429 no meio do trabalho
- * enquanto o servidor terminava a importação normalmente.
- *
- * O recorte precisa ser estreito: só a LEITURA de progresso sai da cota. Subir arquivo,
- * confirmar e cancelar continuam contando, porque são as que mudam estado e são
- * justamente o que um abuso tentaria repetir.
- */
+// Só a leitura de progresso sai da cota: o polling da importação estourava o limite por IP.
 const pede = (method: string, path: string) => ehConsultaDeProgresso({ method, path });
 
 describe('escopo do limite geral', () => {

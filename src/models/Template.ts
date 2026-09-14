@@ -3,12 +3,12 @@ import { type HydratedDocument, model, Schema } from 'mongoose';
 import { tenantScope } from './plugins/tenantScope';
 
 export interface ITemplate {
-  /** Cliente dono do registro. Preenchido automaticamente pelo plugin tenantScope. */
+  /** Preenchido pelo plugin tenantScope. */
   tenantId?: Types.ObjectId;
   name: string;
   subject: string;
   html: string;
-  /** Variáveis {{...}} detectadas no html+subject — atualizadas a cada save. */
+  /** Variáveis {{...}} encontradas no html e no assunto; recalculadas a cada save. */
   variables: string[];
   createdAt: Date;
   updatedAt: Date;

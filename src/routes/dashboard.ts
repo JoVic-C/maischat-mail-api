@@ -7,8 +7,7 @@ const router = Router();
 
 router.get('/stats', ctrl.getStats);
 
-// Relatório de envios da conta. Sem parâmetros, devolve os últimos 30 dias por dia —
-// o mesmo recorte que o gráfico mostrava antes de ganhar filtro.
+// Sem parâmetros: últimos 30 dias, agrupados por dia.
 router.get(
   '/sends',
   query('de').optional().isISO8601().withMessage('Data inicial inválida.'),

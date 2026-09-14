@@ -4,7 +4,6 @@ import User from '../models/User';
 
 import type { JwtPayload } from '../services/auth.service';
 
-/** Exige um JWT válido (Authorization: Bearer <token>). Popula req.user. */
 export const requireAuth: RequestHandler = async (req, res, next) => {
   try {
     const token = req.header('Authorization')?.replace('Bearer ', '');
@@ -23,8 +22,7 @@ export const requireAuth: RequestHandler = async (req, res, next) => {
       res.status(403).json({ error: 'Conta desativada.' });
       return;
     }
-    // Revogação: tokens emitidos antes do último logout-all/troca de senha têm `v` defasado.
-    // `?? 0` cobre os tokens emitidos antes deste campo existir.
+    // Token emitido antes do último logout-all ou troca de senha; `?? 0` cobre tokens anteriores ao campo.
     if ((decoded.v ?? 0) !== user.tokenVersion) {
       res.status(401).json({ error: 'Sessão expirada. Faça login novamente.' });
       return;
@@ -37,11 +35,7 @@ export const requireAuth: RequestHandler = async (req, res, next) => {
   }
 };
 
-/**
- * Exige papel de administração — usar SEMPRE depois de requireAuth.
- * O superadmin passa porque administra qualquer cliente (dentro do tenant que
- * ele informar no header X-Tenant-Id, conforme o middleware tenantContext).
- */
+/** Depois do requireAuth. O superadmin passa, dentro do cliente informado em X-Tenant-Id. */
 export const requireAdmin: RequestHandler = (req, res, next) => {
   if (req.user?.role !== 'admin' && req.user?.role !== 'superadmin') {
     res.status(403).json({ error: 'Acesso restrito a administradores.' });
@@ -50,7 +44,6 @@ export const requireAdmin: RequestHandler = (req, res, next) => {
   next();
 };
 
-/** Exige superadmin — administração da própria plataforma (criar/gerir clientes). */
 export const requireSuperadmin: RequestHandler = (req, res, next) => {
   if (req.user?.role !== 'superadmin') {
     res.status(403).json({ error: 'Acesso restrito à administração da plataforma.' });

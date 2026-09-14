@@ -8,15 +8,15 @@ import SmtpSettings from '../models/SmtpSettings';
 import Template from '../models/Template';
 import { type EmailJob, enqueueEmails, removeCampaignJobs } from '../queue/email.queue';
 import { cancelSchedule, scheduleCampaign } from '../queue/scheduler.queue';
+import { garantirHtmlEnviavel } from '../utils/htmlEscapado';
 import { logger } from '../utils/logger';
 import emailService from './email.service';
 import segmentService from './segment.service';
+import sendingDomainService from './sendingDomain.service';
 import smtpService, { FALLBACK_SMTP_ID } from './smtp.service';
 
-/** Quantos destinatários são materializados por vez ao disparar uma campanha. */
 const DISPATCH_BATCH_SIZE = Number(process.env.CAMPAIGN_BATCH_SIZE) || 1000;
 
-/** Projeção mínima de um destinatário — só o que vira job de envio. */
 interface RecipientRow {
   _id: Types.ObjectId;
   email: string;
@@ -83,22 +83,20 @@ export class CampaignService {
     if (campaign.status === 'sending') {
       throw new BadRequestError('Não é possível excluir uma campanha em envio');
     }
-    await cancelSchedule(id); // remove agendamento pendente, se houver
-    const drained = await removeCampaignJobs(id); // drena os envios que ainda estão na fila
+    await cancelSchedule(id);
+    const drained = await removeCampaignJobs(id);
     if (drained) logger.info(`🧹 ${drained} envio(s) pendente(s) removido(s) da fila da campanha ${id}`);
     await SendLog.deleteMany({ campaignId: id });
     await campaign.deleteOne();
   }
 
-  /** Logs de envio paginados — uma campanha grande tem centenas de milhares de linhas. */
   async getLogs(
     campaignId: string,
     opts: { page?: number; limit?: number; status?: string } = {}
   ): Promise<CampaignLogsResult> {
     await this.getById(campaignId);
 
-    // O default de 500 preserva o comportamento anterior (limit fixo de 500) para
-    // quem chama sem paginar — o frontend atual depende disso.
+    // O painel chama sem paginar e depende do padrão de 500.
     const page = Math.max(1, opts.page ?? 1);
     const limit = Math.min(500, Math.max(1, opts.limit ?? 500));
     const query: Record<string, unknown> = { campaignId };
@@ -130,17 +128,17 @@ export class CampaignService {
 
     const template = await Template.findById(campaign.templateId);
     if (!template) throw new BadRequestError('Template da campanha não encontrado.');
+    garantirHtmlEnviavel(template.html);
 
-    // SMTP do cliente (o escolhido ou o padrão). Se não houver, cai no xMailer embutido.
     const custom = campaign.smtpId
       ? await SmtpSettings.findById(campaign.smtpId)
       : await SmtpSettings.findOne({ isDefault: true });
     if (!custom && !smtpService.getFallbackSmtp()) {
       throw new BadRequestError('Nenhum servidor SMTP configurado e o xMailer padrão não está definido.');
     }
+    if (custom) await sendingDomainService.assertSendable(custom);
     const smtpIdForJob = custom ? String(custom._id) : FALLBACK_SMTP_ID;
 
-    // Filtro opcional de segmento: intersecta as listas com as regras do segmento.
     let segmentQuery: Record<string, unknown> = {};
     if (campaign.segmentId) {
       const segment = await Segment.findById(campaign.segmentId);
@@ -150,7 +148,6 @@ export class CampaignService {
     const recipientQuery = {
       lists: { $in: campaign.listIds },
       status: 'active',
-      // Escopo "só entregues": reenvia apenas para quem já recebeu com sucesso antes.
       ...(opts.onlyDelivered ? { lastDeliveredAt: { $ne: null } } : {}),
       ...segmentQuery,
     };
@@ -162,8 +159,7 @@ export class CampaignService {
 
     const attachments = campaign.attachments.map((a) => ({ filename: a.filename, storedName: a.storedName }));
 
-    // Recomeço limpo: remove os envios anteriores (evita E11000 no índice único {campaignId,contactId})
-    // e zera as métricas herdadas de uma execução anterior.
+    // Remove os envios anteriores (índice único {campaignId, contactId}) e zera as métricas.
     await SendLog.deleteMany({ campaignId: campaign._id });
     campaign.stats.sent = 0;
     campaign.stats.failed = 0;
@@ -173,17 +169,14 @@ export class CampaignService {
     campaign.stats.unsubscribed = 0;
     campaign.linkStats.splice(0);
 
-    // Congela o conteúdo AQUI: uma cópia por campanha, lida pelo worker. Antes ela ia
-    // dentro de cada job, o que inviabilizava campanhas de milhões de destinatários.
     campaign.snapshot = { subject: template.subject, html: template.html };
     campaign.status = 'sending';
     campaign.startedAt = new Date();
-    campaign.scheduledAt = null; // se veio de um agendamento, limpa a marca
-    campaign.stats.total = total; // definido ANTES de enfileirar, senão o finalize dispararia cedo
+    campaign.scheduledAt = null;
+    // Antes de enfileirar, senão o finalizeIfDone concluiria a campanha cedo.
+    campaign.stats.total = total;
     await campaign.save();
 
-    // Percorre os destinatários por cursor e despacha em lotes: uma lista de centenas de
-    // milhares de contatos não cabe em memória de uma vez (nem como docs, nem como jobs).
     let queued = 0;
     let batch: RecipientRow[] = [];
     try {
@@ -203,8 +196,7 @@ export class CampaignService {
         queued += await this.dispatchBatch(campaign, batch, template, smtpIdForJob, attachments);
       }
     } catch (err) {
-      // Enfileiramento interrompido no meio: pausa a campanha em vez de deixá-la
-      // 'sending' com menos jobs do que o total (que nunca completaria).
+      // Com menos jobs que o total a campanha nunca concluiria; pausa em vez disso.
       campaign.status = 'paused';
       campaign.stats.total = queued;
       await campaign.save();
@@ -219,14 +211,7 @@ export class CampaignService {
     return { queued };
   }
 
-  /**
-   * Explica POR QUE não sobrou ninguém para receber.
-   *
-   * Antes a recusa era sempre "Nenhum contato ativo nas listas", o que manda o usuário
-   * procurar no lugar errado quando o público foi zerado por um filtro — o caso comum
-   * é escolher "só quem já recebeu antes" numa lista que nunca recebeu nada.
-   * Cada checagem abaixo é uma contagem barata e só roda no caminho de erro.
-   */
+  /** Diz qual filtro zerou o público; só roda no caminho de erro. */
   private async explicarPublicoVazio(
     listIds: Types.ObjectId[],
     opts: { onlyDelivered?: boolean },
@@ -240,7 +225,6 @@ export class CampaignService {
       return `Os ${nasListas} contato(s) das listas estão bloqueados por bounce ou descadastro — nenhum pode receber.`;
     }
 
-    // Há ativos: o que zerou foi um dos filtros. Descobre qual para dizer o certo.
     const temSegmento = Object.keys(segmentQuery).length > 0;
     if (temSegmento) {
       const comSegmento = await Contact.countDocuments({
@@ -260,12 +244,10 @@ export class CampaignService {
       );
     }
 
-    // Chegar aqui significa que a contagem mudou entre as duas queries (importação
-    // simultânea, por exemplo) — melhor ser honesto do que inventar um motivo.
+    // A contagem mudou entre as consultas (importação simultânea, por exemplo).
     return 'Nenhum contato elegível para esta campanha no momento.';
   }
 
-  /** Cria os SendLog e enfileira os jobs de um lote de destinatários. */
   private async dispatchBatch(
     campaign: CampaignDocument,
     contacts: RecipientRow[],
@@ -273,7 +255,6 @@ export class CampaignService {
     smtpIdForJob: string,
     attachments: { filename: string; storedName: string }[]
   ): Promise<number> {
-    // Um insertMany por lote (evita N+1 de milhares de inserts seriais).
     const logs = await SendLog.insertMany(
       contacts.map((contact) => ({
         campaignId: campaign._id,
@@ -283,19 +264,17 @@ export class CampaignService {
       }))
     );
 
+    // O conteúdo não viaja no job: o worker lê o snapshot da campanha.
     const jobs: EmailJob[] = contacts.map((contact, i) => ({
       tenantId: String(campaign.tenantId),
       campaignId: String(campaign._id),
       sendLogId: String(logs[i]._id),
       smtpId: smtpIdForJob,
       to: contact.email,
-      // Sem conteúdo aqui: o worker lê o snapshot da campanha. Só o que varia por
-      // destinatário viaja no job.
       data: {
         name: contact.name,
         email: contact.email,
         company: contact.company,
-        // .lean() devolve metadata como objeto puro — espalha direto.
         ...(contact.metadata ?? {}),
       },
     }));
@@ -304,7 +283,6 @@ export class CampaignService {
     return jobs.length;
   }
 
-  /** Agenda o disparo para uma data futura (cria um job atrasado na fila do scheduler). */
   async schedule(id: string, scheduledAt: Date): Promise<{ scheduledAt: Date }> {
     const campaign = await this.getById(id);
     if (['sending', 'queued'].includes(campaign.status)) {
@@ -318,15 +296,14 @@ export class CampaignService {
       throw new BadRequestError('A data de agendamento deve ser no futuro.');
     }
 
-    await cancelSchedule(id); // remove agendamento anterior, se houver
-    await scheduleCampaign(String(campaign.tenantId), id, delayMs); // job atrasado (dispara start() na hora)
+    await cancelSchedule(id);
+    await scheduleCampaign(String(campaign.tenantId), id, delayMs);
     campaign.status = 'scheduled';
     campaign.scheduledAt = scheduledAt;
     await campaign.save();
     return { scheduledAt };
   }
 
-  /** Cancela um agendamento e volta a campanha para rascunho. */
   async unschedule(id: string): Promise<void> {
     const campaign = await this.getById(id);
     if (campaign.status !== 'scheduled') {
@@ -338,17 +315,18 @@ export class CampaignService {
     await campaign.save();
   }
 
-  /** Envia UM email de teste (sem tracking) para validar o visual antes do disparo. */
+  /** Um email sem tracking, para conferir o visual antes do disparo. */
   async sendTest(id: string, toEmail: string): Promise<{ to: string }> {
     const campaign = await this.getById(id);
 
     const template = await Template.findById(campaign.templateId);
     if (!template) throw new BadRequestError('Template da campanha não encontrado.');
+    garantirHtmlEnviavel(template.html);
 
     const smtp =
       (campaign.smtpId
         ? await SmtpSettings.findById(campaign.smtpId)
-        : await SmtpSettings.findOne({ isDefault: true })) ?? smtpService.getFallbackSmtp(); // cai no xMailer se não houver SMTP próprio
+        : await SmtpSettings.findOne({ isDefault: true })) ?? smtpService.getFallbackSmtp();
     if (!smtp) throw new BadRequestError('Nenhum servidor SMTP configurado e o xMailer padrão não está definido.');
 
     await emailService.send({
@@ -366,7 +344,6 @@ export class CampaignService {
     return { to: toEmail };
   }
 
-  /** Pausa UMA campanha em envio. O worker adia os jobs enquanto ela estiver 'paused'. */
   async pause(id: string): Promise<void> {
     const campaign = await this.getById(id);
     if (campaign.status !== 'sending') {
@@ -376,13 +353,13 @@ export class CampaignService {
     await campaign.save();
   }
 
-  /** Retoma uma campanha pausada: o worker volta a processar os jobs adiados. */
   async resume(id: string): Promise<void> {
     const campaign = await this.getById(id);
     if (campaign.status !== 'paused') {
       throw new BadRequestError('A campanha não está pausada.');
     }
     campaign.status = 'sending';
+    campaign.pauseReason = null;
     await campaign.save();
   }
 }

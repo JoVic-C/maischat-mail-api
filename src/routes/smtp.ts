@@ -5,7 +5,6 @@ import { EMAIL_NORMALIZE, validate } from '../middleware/validate';
 
 const router = Router();
 
-/** Credenciais de conexão — compartilhadas por /test e /test-email. */
 const credentialRules = [
   body('host').trim().notEmpty().withMessage('Host obrigatório.'),
   body('port').isInt({ min: 1, max: 65535 }).withMessage('Porta inválida.'),
@@ -16,8 +15,7 @@ const credentialRules = [
 
 router.get('/', ctrl.getSmtpServers);
 
-// Na criação (sem id) as credenciais são obrigatórias; na edição (com id) são opcionais —
-// o serviço só sobrescreve os campos enviados, então dá pra editar nome/limites sem reenviar a senha.
+// Credenciais obrigatórias só na criação: na edição dá para mudar nome e limites sem reenviar a senha.
 const onCreate = body('id').not().exists();
 router.post(
   '/save',
