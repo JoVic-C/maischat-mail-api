@@ -51,4 +51,14 @@ export const authLimiter = rateLimit({
   message: { error: 'Muitas tentativas de login. Tente novamente em instantes.' },
 });
 
+/** Formulário público: janela curta por IP; o teto que protege a reputação é o por hora de cada webhook. */
+export const formWebhookLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: Number(process.env.FORM_WEBHOOK_IP_MAX) || 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: redisStore('rl:formhook:'),
+  message: { error: 'Muitos envios deste endereço. Tente novamente em instantes.' },
+});
+
 logger.info(`🛡️  Rate limit: ${max} req / ${Math.round(windowMs / 60000)}min (store: Redis)`);

@@ -8,6 +8,7 @@ import app from './app';
 import connectDB, { disconnectDB } from './config/db';
 import { connectRedis, disconnectRedis } from './config/redis';
 import { startEmailWorker, stopEmailWorker } from './queue/email.worker';
+import { startFormEmailWorker, stopFormEmailWorker } from './queue/formEmail.worker';
 import { startImportWorker, stopImportWorker } from './queue/import.worker';
 import { startSchedulerWorker, stopSchedulerWorker } from './queue/scheduler.worker';
 import { logger } from './utils/logger';
@@ -36,6 +37,7 @@ async function shutdown(signal: string): Promise<void> {
   try {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await stopEmailWorker();
+    await stopFormEmailWorker();
     await stopImportWorker();
     await stopSchedulerWorker();
     await disconnectRedis();
@@ -57,6 +59,7 @@ const server = app.listen(PORT, async () => {
   await connectRedis();
   logger.info(`🟢 mMail API listening on port ${PORT} (${process.env.NODE_ENV || 'development'})`);
   await startEmailWorker();
+  startFormEmailWorker();
   await startImportWorker();
   startSchedulerWorker();
 });

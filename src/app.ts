@@ -16,6 +16,8 @@ import bounceRoutes from './routes/bounce';
 import campaignRoutes from './routes/campaigns';
 import contactRoutes from './routes/contacts';
 import dashboardRoutes from './routes/dashboard';
+import formHookRoutes from './routes/formHooks';
+import formWebhookRoutes from './routes/formWebhooks';
 import listRoutes from './routes/lists';
 import platformMonitorRoutes from './routes/platformMonitor';
 import platformSettingsRoutes from './routes/platformSettings';
@@ -34,6 +36,9 @@ const app = express();
 
 app.set('trust proxy', 1);
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+
+// Antes do CORS e dos parsers globais: recebe de qualquer site, em qualquer formato.
+app.use('/api/hooks/forms', formHookRoutes);
 
 function frontendOrigin(): string | null {
   const fe = process.env.FRONTEND_URL;
@@ -89,6 +94,7 @@ app.use('/api/templates', requireAuth, tenantContext, templateRoutes);
 app.use('/api/campaigns', requireAuth, tenantContext, campaignRoutes);
 app.use('/api/smtp', requireAuth, requireAdmin, tenantContext, smtpRoutes);
 app.use('/api/sending-domains', requireAuth, requireAdmin, tenantContext, sendingDomainRoutes);
+app.use('/api/form-webhooks', requireAuth, requireAdmin, tenantContext, formWebhookRoutes);
 app.use('/api/users', requireAuth, requireAdmin, tenantContext, userRoutes);
 app.use('/api/segments', requireAuth, tenantContext, segmentRoutes);
 app.use('/api/bounces', requireAuth, requireAdmin, tenantContext, bounceRoutes);
