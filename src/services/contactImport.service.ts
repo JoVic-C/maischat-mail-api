@@ -20,8 +20,15 @@ export const IMPORT_DIR = process.env.IMPORT_DIR || 'data/imports';
 
 const VALIDATE_BATCH = 200;
 const IMPORT_BATCH = 500;
-/** A cada quantas linhas o progresso vai para o banco e o cancelamento é checado. */
-const FLUSH_EVERY = 2000;
+/**
+ * Intervalo entre gravações do progresso, que também é quando o cancelamento é checado.
+ * Por tempo, e não por número de linhas: a tela acompanha a contagem subindo continuamente.
+ */
+function progressIntervalMs(): number {
+  const raw = process.env.IMPORT_PROGRESS_MS;
+  const ms = raw === undefined || raw === '' ? Number.NaN : Number(raw);
+  return Number.isFinite(ms) && ms >= 0 ? ms : 500;
+}
 const SAMPLE_SIZE = 200;
 /** Acima disto o relatório de recusados sai em CSV, porque o .xlsx é montado em memória. */
 const XLSX_MAX_ROWS = 20_000;
@@ -146,7 +153,8 @@ export class ContactImportService {
     const invalidOut = fs.createWriteStream(job.invalidPath, { flags: 'w' });
 
     try {
-      let sinceFlush = 0;
+      const interval = progressIntervalMs();
+      let lastFlush = Date.now();
 
       for await (const batch of inBatches(streamSheetRows(job.sourcePath), VALIDATE_BATCH)) {
         const classified = await contactService.classifyBatch(batch, listIds, ctx);
@@ -160,9 +168,8 @@ export class ContactImportService {
           await this.persistRow(row, validOut, invalidOut);
         }
 
-        sinceFlush += batch.length;
-        if (sinceFlush >= FLUSH_EVERY) {
-          sinceFlush = 0;
+        if (Date.now() - lastFlush >= interval) {
+          lastFlush = Date.now();
           const stillRunning = await this.flush(job.id, counters, sample);
           if (!stillRunning) return;
         }
@@ -183,16 +190,16 @@ export class ContactImportService {
     const listIds = job.listIds.map(String);
     let imported = 0;
     let skipped = 0;
-    let sinceFlush = 0;
+    const interval = progressIntervalMs();
+    let lastFlush = Date.now();
 
     for await (const batch of inBatches(this.readNdjson<ValidatedRow>(job.validPath), IMPORT_BATCH)) {
       const result = await contactService.importRows(batch, listIds);
       imported += result.imported;
       skipped += result.skipped;
 
-      sinceFlush += batch.length;
-      if (sinceFlush >= FLUSH_EVERY) {
-        sinceFlush = 0;
+      if (Date.now() - lastFlush >= interval) {
+        lastFlush = Date.now();
         const fresh = await ImportJob.findById(job.id).select('status').lean<{ status: string } | null>();
         if (fresh?.status === 'canceled') {
           // Cancelar não desfaz o que já entrou; o contador precisa refletir isso.
