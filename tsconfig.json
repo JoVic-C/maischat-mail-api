@@ -21,8 +21,8 @@
   "ts-node": {
     // Carrega os .d.ts do projeto (augmentation do Request do Express).
     "files": true,
-    // Sem checagem de tipos no boot: o `tsc` completo custa ~14s A CADA start do
-    // nodemon, e era isso que atrasava a subida em desenvolvimento. Os tipos
+    // Sem checagem de tipos no boot: o `tsc` completo custa ~14s A CADA reinício do
+    // modo watch, e era isso que atrasava a subida em desenvolvimento. Os tipos
     // continuam garantidos fora do caminho quente — `npm run typecheck`, o hook
     // de pre-commit e o CI. Não afeta build nem produção, que usam `tsc` de fato.
     "transpileOnly": true
