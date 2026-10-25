@@ -263,6 +263,13 @@ async function sendOne(job: Job<EmailJob>, token: string | undefined, versaoCont
     // Pausa a campanha e devolve este envio à fila sem gastá-lo; sai ao retomar.
     if (isAuthError(err)) {
       logger.error(`🔒 SMTP auth/config failure in campaign ${campaignId} → ${to}: ${detail}`);
+      // Falhou com a senha antiga, mas o SMTP já foi corrigido: tenta de novo com a nova em vez
+      // de pausar — senão este envio atrasado desfaria o "retomar" de quem acabou de corrigir.
+      if (await smtpService.changedSince(smtpId, smtp.updatedAt)) {
+        logger.info(`↻ SMTP ${smtpId} foi alterado durante o envio; nova tentativa com as credenciais atuais → ${to}`);
+        await job.moveToDelayed(Date.now() + SLOT_RECHECK_MS, token);
+        throw new DelayedError();
+      }
       await pauseForSmtpAuth(campaignId, detail);
       await job.moveToDelayed(Date.now() + PAUSE_RECHECK_MS, token);
       throw new DelayedError();

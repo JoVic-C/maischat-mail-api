@@ -32,6 +32,17 @@ export type SafeSmtp = Omit<ISmtpSettings, 'password'> & { id: string };
 export const FALLBACK_SMTP_ID = '__xmailer__';
 
 export class SmtpService {
+  /**
+   * O servidor foi editado depois de `loadedAt` (o `updatedAt` lido pelo envio)? Um envio
+   * que falhou com credenciais já substituídas não diz nada sobre as atuais. O SMTP da
+   * plataforma vem do ambiente e não muda em execução.
+   */
+  async changedSince(smtpId: string, loadedAt: Date | undefined): Promise<boolean> {
+    if (smtpId === FALLBACK_SMTP_ID || !loadedAt) return false;
+    const current = await SmtpSettings.findById(smtpId).select('updatedAt').lean<{ updatedAt: Date } | null>();
+    return Boolean(current && current.updatedAt.getTime() !== loadedAt.getTime());
+  }
+
   /** SMTP da plataforma, usado quando o cliente não tem servidor próprio. */
   getFallbackSmtp(): ISmtpSettings | null {
     const host = process.env.XMAILER_SMTP_HOST;
