@@ -9,9 +9,11 @@ import SmtpSettings from '../models/SmtpSettings';
 import Template from '../models/Template';
 import { enqueueFormEmail } from '../queue/formEmail.queue';
 import { reserveSmtpQuota } from '../queue/smtpQuota';
+import { emailDomainHasMail } from '../utils/emailHygiene';
 import { extractFields, type FormFields, pickEmail, pickName } from '../utils/formFields';
 import { garantirHtmlEnviavel } from '../utils/htmlEscapado';
 import emailService from './email.service';
+import emailVerificationService from './emailVerification.service';
 import sendingDomainService from './sendingDomain.service';
 import smtpService, { FALLBACK_SMTP_ID } from './smtp.service';
 
@@ -202,6 +204,9 @@ export class FormWebhookService {
     if (await Contact.exists({ email: submission.email, status: 'bounced' })) {
       return this.fail(submissionId, 'Endereço com bounce registrado: o email não foi enviado.');
     }
+    if (!(await emailDomainHasMail(submission.email))) {
+      return this.fail(submissionId, 'O domínio do email não existe ou não recebe mensagens: o email não foi enviado.');
+    }
 
     const custom = hook.smtpId
       ? await SmtpSettings.findById(hook.smtpId)
@@ -224,6 +229,10 @@ export class FormWebhookService {
       smtp.hourlyLimit
     );
     if (!quota.ok) return { kind: 'retry-after', ms: quota.retryAfterMs };
+
+    // Depois da cota do SMTP: a espera por cota reentra aqui, e verificar antes cobraria de novo.
+    const mailboxProblem = await this.mailboxProblem(submission.email);
+    if (mailboxProblem) return this.fail(submissionId, mailboxProblem);
 
     const fields = (submission.fields ?? {}) as FormFields;
     const result = await emailService.send({
@@ -253,6 +262,23 @@ export class FormWebhookService {
       { new: true }
     );
     if (submission) await FormWebhook.updateOne({ _id: submission.webhookId }, { $inc: { 'stats.failed': 1 } });
+  }
+
+  /** Usa a verificação do contato, se recente; senão consulta o provedor e guarda no contato. */
+  private async mailboxProblem(email: string): Promise<string | null> {
+    const contact = await Contact.findOne({ email }).select('verification');
+    let verification = emailVerificationService.isFresh(contact?.verification) ? contact?.verification : null;
+
+    if (!verification) {
+      verification = await emailVerificationService.verifySingle(email);
+      if (verification && contact) {
+        contact.verification = verification;
+        await contact.save();
+      }
+    }
+
+    if (verification?.status !== 'undeliverable') return null;
+    return `Caixa postal reprovada na verificação (${emailVerificationService.describe(verification)}): o email não foi enviado.`;
   }
 
   private async fail(submissionId: string, reason: string): Promise<DeliverOutcome> {

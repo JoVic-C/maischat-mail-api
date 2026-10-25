@@ -8,6 +8,11 @@ describe('escopo do limite geral', () => {
   it('deixa passar a leitura de progresso', () => {
     expect(pede('GET', '/api/contacts/import/6a9d23f9256cc4d77c3756a6')).toBe(true);
     expect(pede('GET', '/api/contacts/import/open')).toBe(true);
+    expect(pede('GET', '/api/lists/6a9d23f9256cc4d77c3756a6/verification')).toBe(true);
+  });
+
+  it('iniciar a verificação, que gasta créditos, continua na cota', () => {
+    expect(pede('POST', '/api/lists/6a9d23f9256cc4d77c3756a6/verify')).toBe(false);
   });
 
   it('não abre a mão para o que muda estado', () => {

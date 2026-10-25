@@ -1,4 +1,5 @@
 import { type HydratedDocument, model, Schema, type Types } from 'mongoose';
+import { type ContactVerification, VERIFICATION_STATUSES } from '../utils/emailVerification';
 import { decrypt, encrypt } from '../utils/fieldCrypto';
 import { tenantScope } from './plugins/tenantScope';
 
@@ -17,6 +18,8 @@ export interface IContact {
   /** Último envio aceito com sucesso. */
   lastDeliveredAt: Date | null;
   metadata: Map<string, string>;
+  /** Ausente: nunca verificado. Contato `undeliverable` não entra em campanha. */
+  verification?: ContactVerification | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -35,6 +38,17 @@ const contactSchema = new Schema<IContact>(
     unsubscribedAt: { type: Date, default: null },
     lastDeliveredAt: { type: Date, default: null, index: true },
     metadata: { type: Map, of: String, default: {} },
+    verification: {
+      type: new Schema<ContactVerification>(
+        {
+          status: { type: String, enum: VERIFICATION_STATUSES, required: true },
+          result: { type: String, default: '' },
+          checkedAt: { type: Date, required: true },
+        },
+        { _id: false }
+      ),
+      default: undefined,
+    },
   },
   { timestamps: true, toJSON: { getters: true }, toObject: { getters: true } }
 );

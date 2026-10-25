@@ -13,6 +13,12 @@ import emailService from '../../services/email.service';
 import formWebhookService from '../../services/formWebhook.service';
 import { criarCliente } from './fabricas';
 
+// Sem DNS de verdade nos testes: todo domínio "recebe email".
+vi.mock('../../utils/emailHygiene', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/emailHygiene')>()),
+  emailDomainHasMail: async () => true,
+}));
+
 type Cliente = Awaited<ReturnType<typeof criarCliente>>;
 
 async function criarTemplate(tenantId: Types.ObjectId) {

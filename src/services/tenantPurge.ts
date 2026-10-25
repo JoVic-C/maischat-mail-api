@@ -12,6 +12,7 @@ import SendingDomain from '../models/SendingDomain';
 import SendLog from '../models/SendLog';
 import SmtpSettings from '../models/SmtpSettings';
 import Template from '../models/Template';
+import VerificationJob from '../models/VerificationJob';
 
 export async function deleteAllOfTenant(): Promise<Record<string, number>> {
   const [
@@ -25,6 +26,7 @@ export async function deleteAllOfTenant(): Promise<Record<string, number>> {
     sendingDomains,
     formWebhooks,
     formSubmissions,
+    verificationJobs,
   ] = await Promise.all([
     SendLog.deleteMany({}),
     Campaign.deleteMany({}),
@@ -36,6 +38,7 @@ export async function deleteAllOfTenant(): Promise<Record<string, number>> {
     SendingDomain.deleteMany({}),
     FormWebhook.deleteMany({}),
     FormSubmission.deleteMany({}),
+    VerificationJob.deleteMany({}),
   ]);
 
   return {
@@ -49,5 +52,6 @@ export async function deleteAllOfTenant(): Promise<Record<string, number>> {
     sendingDomains: sendingDomains.deletedCount ?? 0,
     formWebhooks: formWebhooks.deletedCount ?? 0,
     formSubmissions: formSubmissions.deletedCount ?? 0,
+    verificationJobs: verificationJobs.deletedCount ?? 0,
   };
 }

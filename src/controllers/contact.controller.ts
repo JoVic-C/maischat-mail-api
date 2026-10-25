@@ -1,16 +1,20 @@
 import type { NextFunction, Request, Response } from 'express';
-import contactService from '../services/contact.service';
+import contactService, { type ContactFilters } from '../services/contact.service';
 import contactExportService from '../services/contactExport.service';
 import { logCtrlError } from '../utils/logger';
 
 export const getContacts = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const { search, listId, status, delivery, page, limit } = req.query as Record<string, string | undefined>;
+    const { search, listId, status, delivery, verification, page, limit } = req.query as Record<
+      string,
+      string | undefined
+    >;
     const result = await contactService.list({
       search,
       listId,
       status: status as 'active' | 'unsubscribed' | 'bounced' | undefined,
       delivery: delivery as 'delivered' | 'never' | 'undeliverable' | undefined,
+      verification: verification as ContactFilters['verification'],
       page: page ? Number(page) : undefined,
       limit: limit ? Number(limit) : undefined,
     });

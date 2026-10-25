@@ -24,6 +24,10 @@ router.get(
   query('listId').optional().isMongoId().withMessage('ID de lista inválido.'),
   query('status').optional().isIn(['active', 'unsubscribed', 'bounced']).withMessage('Status inválido.'),
   query('delivery').optional().isIn(['delivered', 'never', 'undeliverable']).withMessage('Filtro de entrega inválido.'),
+  query('verification')
+    .optional()
+    .isIn(['deliverable', 'undeliverable', 'risky', 'unknown', 'unverified'])
+    .withMessage('Filtro de verificação inválido.'),
   query('page').optional().isInt({ min: 1 }).withMessage('Página inválida.'),
   query('limit').optional().isInt({ min: 1, max: 200 }).withMessage('Limite inválido.'),
   validate,

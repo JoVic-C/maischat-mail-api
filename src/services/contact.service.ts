@@ -1,12 +1,14 @@
 import { type AnyBulkWriteOperation, Types } from 'mongoose';
 import { requireTenantId } from '../config/tenantContext';
-import { ConflictError, NotFoundError } from '../errors';
+import { ConflictError, NotFoundError, ValidationError } from '../errors';
 import Contact, { type ContactDocument, type IContact } from '../models/Contact';
 import List from '../models/List';
 import type { CsvRow } from '../utils/csv';
-import { domainHasMail, EMAIL_RE } from '../utils/emailHygiene';
+import { domainHasMail, EMAIL_RE, emailDomainHasMail } from '../utils/emailHygiene';
+import type { ContactVerification, VerificationStatus } from '../utils/emailVerification';
 import { decrypt } from '../utils/fieldCrypto';
 import { escapeRegex } from '../utils/regex';
+import emailVerificationService from './emailVerification.service';
 
 export interface CreateContactInput {
   email: string;
@@ -26,6 +28,8 @@ export interface ContactFilters {
   listId?: string;
   status?: IContact['status'];
   delivery?: 'delivered' | 'never' | 'undeliverable';
+  /** Situação da verificação de caixa postal; `unverified` = nunca verificado. */
+  verification?: VerificationStatus | 'unverified';
   page?: number;
   limit?: number;
 }
@@ -136,6 +140,9 @@ export class ContactService {
     else if (filters.delivery === 'never') query.lastDeliveredAt = null;
     else if (filters.delivery === 'undeliverable') query.status = 'bounced';
 
+    if (filters.verification === 'unverified') query.verification = null;
+    else if (filters.verification) query['verification.status'] = filters.verification;
+
     const [contacts, total] = await Promise.all([
       Contact.find(query)
         .sort({ createdAt: -1 })
@@ -156,10 +163,33 @@ export class ContactService {
     return contact;
   }
 
+  /**
+   * Cadastro avulso: domínio pelo DNS (grátis) e, com a verificação ligada, a caixa postal.
+   * Sem veredito do provedor o contato entra mesmo assim, sem verificação.
+   */
+  private async assertCanReceiveMail(email: string): Promise<ContactVerification | null> {
+    if (!(await emailDomainHasMail(email))) {
+      throw new ValidationError([
+        { field: 'email', message: 'O domínio deste email não existe ou não recebe mensagens.' },
+      ]);
+    }
+    const verification = await emailVerificationService.verifySingle(email);
+    if (verification?.status === 'undeliverable') {
+      throw new ValidationError([
+        {
+          field: 'email',
+          message: `Este email não recebe mensagens: ${emailVerificationService.describe(verification)}.`,
+        },
+      ]);
+    }
+    return verification;
+  }
+
   async create(data: CreateContactInput): Promise<ContactDocument> {
     const email = data.email.toLowerCase().trim();
     const existing = await Contact.findOne({ email });
     if (existing) throw new ConflictError('Já existe um contato com este email.');
+    const verification = await this.assertCanReceiveMail(email);
 
     const contact = await Contact.create({
       email,
@@ -169,6 +199,7 @@ export class ContactService {
       lists: data.lists ?? [],
       status: data.status ?? 'active',
       metadata: data.metadata ?? {},
+      ...(verification ? { verification } : {}),
     });
 
     await this.syncListCounts(contact.lists);
@@ -184,6 +215,8 @@ export class ContactService {
       if (normalized !== contact.email) {
         const clash = await Contact.findOne({ email: normalized });
         if (clash) throw new ConflictError('Já existe um contato com este email.');
+        // Email novo: a verificação do endereço antigo não vale mais.
+        contact.verification = (await this.assertCanReceiveMail(normalized)) ?? undefined;
       }
       contact.email = normalized;
     }

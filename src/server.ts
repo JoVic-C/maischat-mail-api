@@ -11,6 +11,7 @@ import { startEmailWorker, stopEmailWorker } from './queue/email.worker';
 import { startFormEmailWorker, stopFormEmailWorker } from './queue/formEmail.worker';
 import { startImportWorker, stopImportWorker } from './queue/import.worker';
 import { startSchedulerWorker, stopSchedulerWorker } from './queue/scheduler.worker';
+import { startVerificationWorker, stopVerificationWorker } from './queue/verification.worker';
 import { logger } from './utils/logger';
 
 for (const key of ['JWT_SECRET', 'ENCRYPTION_KEY', 'MONGO_URI']) {
@@ -40,6 +41,7 @@ async function shutdown(signal: string): Promise<void> {
     await stopFormEmailWorker();
     await stopImportWorker();
     await stopSchedulerWorker();
+    await stopVerificationWorker();
     await disconnectRedis();
     await disconnectDB();
     clearTimeout(forceTimer);
@@ -62,4 +64,5 @@ const server = app.listen(PORT, async () => {
   startFormEmailWorker();
   await startImportWorker();
   startSchedulerWorker();
+  startVerificationWorker();
 });

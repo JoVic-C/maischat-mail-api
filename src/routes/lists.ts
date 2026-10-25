@@ -1,6 +1,9 @@
 import { Router } from 'express';
 import { body, param, query } from 'express-validator';
 import * as ctrl from '../controllers/list.controller';
+import * as ctrlVerification from '../controllers/verification.controller';
+import { requireAdmin } from '../middleware/auth';
+import { importProgressLimiter } from '../middleware/rateLimit';
 import { validate } from '../middleware/validate';
 
 const router = Router();
@@ -14,6 +17,24 @@ router.get(
 );
 
 router.get('/:id', param('id').isMongoId().withMessage('ID inválido.'), validate, ctrl.getList);
+
+// A tela consulta em intervalos enquanto o provedor verifica: limite próprio, fora da cota geral.
+router.get(
+  '/:id/verification',
+  importProgressLimiter,
+  param('id').isMongoId().withMessage('ID inválido.'),
+  validate,
+  ctrlVerification.getListVerification
+);
+
+// Gasta créditos pagos: só administradores.
+router.post(
+  '/:id/verify',
+  requireAdmin,
+  param('id').isMongoId().withMessage('ID inválido.'),
+  validate,
+  ctrlVerification.startListVerification
+);
 
 router.post(
   '/',

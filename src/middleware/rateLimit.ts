@@ -14,8 +14,8 @@ function redisStore(prefix: string): Store {
   });
 }
 
-/** A tela consulta o progresso da importação em intervalos; isso esgotaria a cota geral. */
-const CONSULTA_DE_PROGRESSO = /^\/api\/contacts\/import\/[^/]+$/;
+/** A tela consulta o progresso da importação e da verificação em intervalos; isso esgotaria a cota geral. */
+const CONSULTA_DE_PROGRESSO = /^\/api\/(contacts\/import\/[^/]+|lists\/[^/]+\/verification)$/;
 
 export function ehConsultaDeProgresso(req: { method: string; path: string }): boolean {
   return req.method === 'GET' && CONSULTA_DE_PROGRESSO.test(req.path);
