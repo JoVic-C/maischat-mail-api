@@ -103,6 +103,22 @@ describe('papéis', () => {
     const { auth } = await criarSuperadmin();
     await request(app).get('/api/tenants').set(auth).expect(200);
   });
+
+  // Antes, o CastError escapava do middleware async e derrubava o processo da API inteiro.
+  it.each(['undefined', 'null', 'nao-e-um-id', '123'])(
+    'X-Tenant-Id fora do formato (%s) é recusado sem derrubar a API',
+    async (cabecalho) => {
+      const { auth } = await criarSuperadmin();
+      const res = await request(app).get('/api/lists').set(auth).set('X-Tenant-Id', cabecalho).expect(400);
+      expect(res.body.error).toMatch(/X-Tenant-Id/);
+      await request(app).get('/api/health').expect(200);
+    }
+  );
+
+  it('X-Tenant-Id de cliente inexistente responde 404', async () => {
+    const { auth } = await criarSuperadmin();
+    await request(app).get('/api/lists').set(auth).set('X-Tenant-Id', '0123456789abcdef01234567').expect(404);
+  });
 });
 
 describe('saúde e rotas inexistentes', () => {

@@ -1,4 +1,5 @@
 import type { RequestHandler } from 'express';
+import { isValidObjectId } from 'mongoose';
 import { runAsSystem, runWithTenant } from '../config/tenantContext';
 import Tenant from '../models/Tenant';
 
@@ -23,7 +24,19 @@ export const tenantContext: RequestHandler = async (req, res, next) => {
       });
       return;
     }
-    const tenant = await Tenant.findById(header).select('isActive').lean();
+    // Id fora do formato faria o Mongoose lançar CastError: responde aqui, como entrada inválida.
+    if (!isValidObjectId(header)) {
+      res.status(400).json({ error: 'Cliente inválido no header X-Tenant-Id.' });
+      return;
+    }
+    let tenant: { isActive: boolean } | null;
+    try {
+      tenant = await Tenant.findById(header).select('isActive').lean<{ isActive: boolean }>();
+    } catch (err) {
+      // O Express 4 não captura rejeição de middleware async: sem isto o processo inteiro cai.
+      next(err);
+      return;
+    }
     if (!tenant) {
       res.status(404).json({ error: 'Cliente não encontrado.' });
       return;
