@@ -30,6 +30,7 @@ function progressIntervalMs(): number {
   return Number.isFinite(ms) && ms >= 0 ? ms : 500;
 }
 const SAMPLE_SIZE = 200;
+const STALE_VALIDATION_MS = 2 * 60 * 1000;
 /** Acima disto o relatório de recusados sai em CSV, porque o .xlsx é montado em memória. */
 const XLSX_MAX_ROWS = 20_000;
 const RETENTION_MS = 48 * 60 * 60 * 1000;
@@ -136,7 +137,12 @@ export class ContactImportService {
 
   async runValidation(jobId: string): Promise<void> {
     const job = await this.getById(jobId);
-    if (job.status !== 'uploaded') return; // reentrega da fila sobre um job já processado
+    if (job.status === 'validating' && this.wasInterrupted(job)) {
+      // Worker caiu no meio: sem recomeçar, a tela ficaria em "validando" para sempre.
+      logger.warn(`↻ Validação da importação ${job.id} interrompida; recomeçando do início.`);
+    } else if (job.status !== 'uploaded') {
+      return; // reentrega da fila sobre um job já processado ou ainda em andamento
+    }
 
     job.status = 'validating';
     job.startedAt = new Date();
@@ -280,6 +286,14 @@ export class ContactImportService {
 
   async markFailed(jobId: string, message: string): Promise<void> {
     await ImportJob.updateOne({ _id: jobId }, { status: 'failed', error: message, finishedAt: new Date() });
+  }
+
+  /**
+   * Validação viva grava o progresso a cada lote, e um lote fica bem abaixo deste prazo (o
+   * DNS tem teto). Sem gravação recente, quem a fazia morreu e a fila a reentregou.
+   */
+  private wasInterrupted(job: ImportJobDocument): boolean {
+    return Date.now() - job.updatedAt.getTime() > STALE_VALIDATION_MS;
   }
 
   private csvCell(value: unknown): string {
