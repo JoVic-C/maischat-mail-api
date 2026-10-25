@@ -27,6 +27,7 @@ const SAMPLE_DATA: Record<string, string> = {
   name: 'João Silva',
   email: 'joao@empresa.com',
   company: 'Mais Chat Tecnologia',
+  phone: '(11) 98765-4321',
 };
 
 export class TemplateService {

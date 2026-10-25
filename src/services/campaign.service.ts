@@ -8,6 +8,7 @@ import SmtpSettings from '../models/SmtpSettings';
 import Template from '../models/Template';
 import { type EmailJob, enqueueEmails, removeCampaignJobs } from '../queue/email.queue';
 import { cancelSchedule, scheduleCampaign } from '../queue/scheduler.queue';
+import { decrypt } from '../utils/fieldCrypto';
 import { garantirHtmlEnviavel } from '../utils/htmlEscapado';
 import { logger } from '../utils/logger';
 import emailService from './email.service';
@@ -17,11 +18,15 @@ import smtpService, { FALLBACK_SMTP_ID } from './smtp.service';
 
 const DISPATCH_BATCH_SIZE = Number(process.env.CAMPAIGN_BATCH_SIZE) || 1000;
 
+/** Caixa postal reprovada na verificação vira hard bounce: não entra no público. */
+const DELIVERABLE_ONLY = { 'verification.status': { $ne: 'undeliverable' } };
+
 interface RecipientRow {
   _id: Types.ObjectId;
   email: string;
   name: string;
   company: string;
+  phone?: string;
   metadata?: Record<string, string>;
 }
 
@@ -148,6 +153,7 @@ export class CampaignService {
     const recipientQuery = {
       lists: { $in: campaign.listIds },
       status: 'active',
+      ...DELIVERABLE_ONLY,
       ...(opts.onlyDelivered ? { lastDeliveredAt: { $ne: null } } : {}),
       ...segmentQuery,
     };
@@ -181,7 +187,7 @@ export class CampaignService {
     let batch: RecipientRow[] = [];
     try {
       const cursor = Contact.find(recipientQuery)
-        .select('email name company metadata')
+        .select('email name company phone metadata')
         .lean<RecipientRow[]>()
         .cursor({ batchSize: DISPATCH_BATCH_SIZE });
 
@@ -225,11 +231,21 @@ export class CampaignService {
       return `Os ${nasListas} contato(s) das listas estão bloqueados por bounce ou descadastro — nenhum pode receber.`;
     }
 
+    const verificaveis = await Contact.countDocuments({
+      lists: { $in: listIds },
+      status: 'active',
+      ...DELIVERABLE_ONLY,
+    });
+    if (!verificaveis) {
+      return `Os ${ativos} contato(s) ativos das listas foram reprovados na verificação de email — nenhum pode receber.`;
+    }
+
     const temSegmento = Object.keys(segmentQuery).length > 0;
     if (temSegmento) {
       const comSegmento = await Contact.countDocuments({
         lists: { $in: listIds },
         status: 'active',
+        ...DELIVERABLE_ONLY,
         ...segmentQuery,
       });
       if (!comSegmento) {
@@ -275,6 +291,8 @@ export class CampaignService {
         name: contact.name,
         email: contact.email,
         company: contact.company,
+        // Cifrado no banco; o .lean() devolve o texto cifrado.
+        phone: decrypt(contact.phone ?? ''),
         ...(contact.metadata ?? {}),
       },
     }));
@@ -334,7 +352,7 @@ export class CampaignService {
       to: toEmail,
       subjectTemplate: template.subject,
       htmlTemplate: template.html,
-      data: { name: 'Você', email: toEmail, company: 'Sua Empresa', plano: 'Pro' },
+      data: { name: 'Você', email: toEmail, company: 'Sua Empresa', phone: '(11) 99999-0000', plano: 'Pro' },
       attachments: campaign.attachments.map((a) => ({ filename: a.filename, storedName: a.storedName })),
       campaignId: String(campaign._id),
       sendLogId: 'test',
