@@ -17,6 +17,7 @@ const provedor = vi.hoisted(() => ({
   resultados: [] as { email: string; result: string }[],
   apagadas: [] as string[],
   unitario: 'ok',
+  chamadasUnitarias: 0,
 }));
 
 vi.mock('../../services/emailListVerify.client', async (importOriginal) => {
@@ -27,7 +28,10 @@ vi.mock('../../services/emailListVerify.client', async (importOriginal) => {
       get configured() {
         return provedor.configured;
       },
-      verifyEmail: async () => provedor.unitario,
+      verifyEmail: async () => {
+        provedor.chamadasUnitarias++;
+        return provedor.unitario;
+      },
       uploadList: async (csv: string) => {
         provedor.uploads.push(csv);
         return `lista-${provedor.uploads.length}`;
@@ -51,11 +55,19 @@ vi.mock('../../queue/verification.queue', () => ({
   },
 }));
 
-// Sem DNS de verdade: todo domínio "recebe email".
-vi.mock('../../utils/emailHygiene', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../utils/emailHygiene')>()),
-  emailDomainHasMail: async () => true,
-}));
+// Sem DNS de verdade: todo domínio "recebe email", salvo os que o teste marcar.
+const dominios = vi.hoisted(() => ({ veredito: {} as Record<string, string> }));
+vi.mock('../../services/domainCheck.service', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../../services/domainCheck.service')>();
+  const veredito = (dominio: string) => dominios.veredito[dominio] ?? 'ok';
+  return {
+    ...original,
+    default: {
+      check: async (dominio: string) => veredito(dominio),
+      checkEmail: async (email: string) => veredito(email.split('@')[1] ?? ''),
+    },
+  };
+});
 
 type Cliente = Awaited<ReturnType<typeof criarCliente>>;
 
@@ -79,6 +91,8 @@ describe('verificação de emails com a EmailListVerify', () => {
     provedor.resultados = [];
     provedor.apagadas = [];
     provedor.unitario = 'ok';
+    provedor.chamadasUnitarias = 0;
+    dominios.veredito = {};
     enfileiradas.length = 0;
     vi.stubEnv('EMAIL_VERIFY_MONTHLY_LIMIT', '100');
     const chaves = await redisConnection.keys('email-verify:*');
@@ -261,5 +275,31 @@ describe('verificação de emails com a EmailListVerify', () => {
     await request(app).post('/api/contacts').set(a.auth).send({ email: 'ana@x.com' }).expect(201);
     const contato = await runWithTenant(a.tenant._id, async () => Contact.findOne({ email: 'ana@x.com' }).lean());
     expect(contato?.verification).toBeUndefined();
+  });
+
+  it('cadastro manual aceita domínio descartável sinalizado, sem gastar crédito na caixa postal', async () => {
+    dominios.veredito['mailinator.com'] = 'disposable';
+    const a = await criarCliente('Cliente A');
+
+    await request(app).post('/api/contacts').set(a.auth).send({ email: 'ana@mailinator.com' }).expect(201);
+    const contato = await runWithTenant(a.tenant._id, async () =>
+      Contact.findOne({ email: 'ana@mailinator.com' }).lean()
+    );
+    expect(contato?.verification).toMatchObject({ status: 'risky', result: 'disposable' });
+    expect(provedor.chamadasUnitarias).toBe(0);
+    expect(await cotaUsada(a)).toBe(0);
+  });
+
+  it('cadastro manual recusa domínio que a checagem aponta sem email', async () => {
+    dominios.veredito['estacionado.com'] = 'no-mail';
+    const a = await criarCliente('Cliente A');
+
+    const recusado = await request(app)
+      .post('/api/contacts')
+      .set(a.auth)
+      .send({ email: 'ana@estacionado.com' })
+      .expect(400);
+    expect(JSON.stringify(recusado.body)).toMatch(/domínio deste email não existe/);
+    expect(provedor.chamadasUnitarias).toBe(0);
   });
 });

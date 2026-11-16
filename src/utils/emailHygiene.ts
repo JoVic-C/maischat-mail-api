@@ -27,7 +27,11 @@ function isNullMx(records: { exchange: string }[]): boolean {
   return records.length === 1 && (records[0].exchange === '' || records[0].exchange === '.');
 }
 
-async function checkDomain(domain: string): Promise<boolean> {
+/**
+ * Primeira etapa, grátis, da checagem de domínio (`domainCheck.service`): o domínio
+ * tem MX ou, na falta dele, registro A. Na dúvida (DNS fora), aprova.
+ */
+export async function dnsAcceptsMail(domain: string): Promise<boolean> {
   let mxSaysMissing = false;
 
   try {
@@ -48,16 +52,6 @@ async function checkDomain(domain: string): Promise<boolean> {
   }
 }
 
-export async function domainHasMail(domain: string, cache: Map<string, boolean>): Promise<boolean> {
-  const key = domain.toLowerCase();
-  if (cache.has(key)) return cache.get(key)!;
-
-  const ok = await checkDomain(key);
-  cache.set(key, ok);
-  return ok;
-}
-
-/** Para entradas avulsas (cadastro manual, formulário), sem cache compartilhado. */
-export function emailDomainHasMail(email: string): Promise<boolean> {
-  return domainHasMail(email.split('@')[1] ?? '', new Map());
+export function domainOf(email: string): string {
+  return (email.split('@')[1] ?? '').trim().toLowerCase().replace(/\.$/, '');
 }

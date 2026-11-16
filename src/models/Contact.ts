@@ -44,6 +44,7 @@ const contactSchema = new Schema<IContact>(
           status: { type: String, enum: VERIFICATION_STATUSES, required: true },
           result: { type: String, default: '' },
           checkedAt: { type: Date, required: true },
+          suggestion: { type: String, default: undefined },
         },
         { _id: false }
       ),

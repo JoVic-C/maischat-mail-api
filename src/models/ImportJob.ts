@@ -22,6 +22,11 @@ export interface ImportCounters {
   inList: number;
   already: number;
   invalid: number;
+  /**
+   * Novos com possível erro de digitação no domínio (já contados em `new`): entram marcados
+   * e fora das campanhas até a revisão.
+   */
+  typo: number;
 }
 
 export interface ImportSampleRow {
@@ -64,6 +69,7 @@ const countersSchema = new Schema<ImportCounters>(
     inList: { type: Number, default: 0 },
     already: { type: Number, default: 0 },
     invalid: { type: Number, default: 0 },
+    typo: { type: Number, default: 0 },
   },
   { _id: false }
 );

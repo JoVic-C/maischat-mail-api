@@ -2,6 +2,7 @@
  * Remoção total dos dados de um cliente. Precisa rodar dentro de `runWithTenant(id, ...)`:
  * cada deleteMany sai escopado pelo plugin e não alcança outro cliente.
  */
+import AcceptedDomain from '../models/AcceptedDomain';
 import Campaign from '../models/Campaign';
 import Contact from '../models/Contact';
 import FormSubmission from '../models/FormSubmission';
@@ -27,6 +28,7 @@ export async function deleteAllOfTenant(): Promise<Record<string, number>> {
     formWebhooks,
     formSubmissions,
     verificationJobs,
+    acceptedDomains,
   ] = await Promise.all([
     SendLog.deleteMany({}),
     Campaign.deleteMany({}),
@@ -39,6 +41,7 @@ export async function deleteAllOfTenant(): Promise<Record<string, number>> {
     FormWebhook.deleteMany({}),
     FormSubmission.deleteMany({}),
     VerificationJob.deleteMany({}),
+    AcceptedDomain.deleteMany({}),
   ]);
 
   return {
@@ -53,5 +56,6 @@ export async function deleteAllOfTenant(): Promise<Record<string, number>> {
     formWebhooks: formWebhooks.deletedCount ?? 0,
     formSubmissions: formSubmissions.deletedCount ?? 0,
     verificationJobs: verificationJobs.deletedCount ?? 0,
+    acceptedDomains: acceptedDomains.deletedCount ?? 0,
   };
 }

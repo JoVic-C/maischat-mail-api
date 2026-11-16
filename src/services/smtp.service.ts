@@ -116,7 +116,20 @@ export class SmtpService {
       if (data.dailyLimit !== undefined) doc.dailyLimit = data.dailyLimit;
       if (data.hourlyLimit !== undefined) doc.hourlyLimit = data.hourlyLimit;
     } else {
-      doc = new SmtpSettings(data);
+      // Só os campos do formulário: o corpo da requisição nunca define dono nem campos internos.
+      doc = new SmtpSettings({
+        name: data.name,
+        host: data.host,
+        port: data.port,
+        secure: data.secure,
+        user: data.user,
+        password: data.password,
+        fromName: data.fromName,
+        fromEmail: data.fromEmail,
+        isDefault: data.isDefault,
+        dailyLimit: data.dailyLimit,
+        hourlyLimit: data.hourlyLimit,
+      });
     }
     await doc.save();
 

@@ -13,7 +13,7 @@ import { inBatches } from '../utils/csvStream';
 import { buildInvalidExcel, type InvalidRow } from '../utils/excel';
 import { logger, logSideEffect } from '../utils/logger';
 import { streamSheetRows } from '../utils/sheetStream';
-import contactService, { type ClassifiedRow, type ValidatedRow } from './contact.service';
+import contactService, { type ClassifiedRow, type ClassifyContext, type ValidatedRow } from './contact.service';
 
 /** Fora de `uploads/`, que é servido sem autenticação: o arquivo é a base de contatos do cliente. */
 export const IMPORT_DIR = process.env.IMPORT_DIR || 'data/imports';
@@ -53,7 +53,7 @@ function closeStream(stream: fs.WriteStream): Promise<void> {
 }
 
 function emptyCounters(): ImportCounters {
-  return { rows: 0, new: 0, addToList: 0, inList: 0, already: 0, invalid: 0 };
+  return { rows: 0, new: 0, addToList: 0, inList: 0, already: 0, invalid: 0, typo: 0 };
 }
 
 export function safeUnlink(filePath: string): void {
@@ -151,7 +151,7 @@ export class ContactImportService {
     await job.save();
 
     const listIds = job.listIds.map(String);
-    const ctx = { mxCache: new Map<string, boolean>(), seen: new Set<string>() };
+    const ctx: ClassifyContext = { domains: new Map(), seen: new Set<string>() };
     const counters = emptyCounters();
     const sample: SampleRow[] = [];
 
@@ -304,6 +304,7 @@ export class ContactImportService {
     switch (row.kind) {
       case 'new':
         counters.new++;
+        if (row.typoSuggestion) counters.typo++;
         break;
       case 'add-to-list':
         counters.addToList++;
@@ -327,6 +328,8 @@ export class ContactImportService {
         phone: row.phone,
         company: row.company,
         metadata: row.metadata,
+        ...(row.disposable ? { disposable: true } : {}),
+        ...(row.typoSuggestion ? { typoSuggestion: row.typoSuggestion } : {}),
       };
       await writeLine(validOut, `${JSON.stringify(payload)}\n`);
       return;

@@ -19,7 +19,12 @@ import VerificationJob, {
   type VerificationJobDocument,
 } from '../models/VerificationJob';
 import { enqueueVerificationStep, type VerificationStep } from '../queue/verification.queue';
-import { type ContactVerification, classifyElvResult, verificationReason } from '../utils/emailVerification';
+import {
+  type ContactVerification,
+  classifyElvResult,
+  TYPO_RESULT,
+  verificationReason,
+} from '../utils/emailVerification';
 import { logger, logSideEffect } from '../utils/logger';
 import emailListVerify, { EmailVerifyProviderError } from './emailListVerify.client';
 
@@ -213,6 +218,8 @@ export class EmailVerificationService {
     return {
       lists: listId,
       status: 'active',
+      // Suspeito de erro de digitação espera a revisão do domínio: verificar gastaria crédito à toa.
+      'verification.result': { $ne: TYPO_RESULT },
       $or: [
         { verification: { $exists: false } },
         { verification: null },

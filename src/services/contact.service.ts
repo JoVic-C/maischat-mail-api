@@ -4,11 +4,26 @@ import { ConflictError, NotFoundError, ValidationError } from '../errors';
 import Contact, { type ContactDocument, type IContact } from '../models/Contact';
 import List from '../models/List';
 import type { CsvRow } from '../utils/csv';
-import { domainHasMail, EMAIL_RE, emailDomainHasMail } from '../utils/emailHygiene';
-import type { ContactVerification, VerificationStatus } from '../utils/emailVerification';
+import { domainOf, EMAIL_RE } from '../utils/emailHygiene';
+import { suggestDomain, type TypoContext } from '../utils/emailTypo';
+import {
+  type ContactVerification,
+  disposableDomainVerification,
+  typoVerification,
+  type VerificationStatus,
+} from '../utils/emailVerification';
 import { decrypt } from '../utils/fieldCrypto';
 import { escapeRegex } from '../utils/regex';
+import domainCheck, { type DomainVerdict } from './domainCheck.service';
+import emailTypoService from './emailTypo.service';
 import emailVerificationService from './emailVerification.service';
+
+/** Cadastro manual é interativo: espera pouco por vaga no limite do provedor. */
+const INTERACTIVE_DOMAIN_WAIT_MS = 1000;
+/** Na importação vale esperar a próxima janela: o veredito vai para o cache. */
+const IMPORT_DOMAIN_WAIT_MS = 10_000;
+/** Domínios consultados em paralelo por lote; a vazão real é o limite por segundo do provedor. */
+const IMPORT_DOMAIN_CONCURRENCY = 20;
 
 export interface CreateContactInput {
   email: string;
@@ -18,6 +33,11 @@ export interface CreateContactInput {
   lists?: string[];
   status?: IContact['status'];
   metadata?: Record<string, string>;
+  /**
+   * A pessoa viu o aviso de possível erro de digitação no domínio e decidiu manter o email.
+   * Sem isso, um domínio suspeito entra marcado e fora das campanhas.
+   */
+  keepEmail?: boolean;
 }
 
 export type UpdateContactInput = Partial<CreateContactInput>;
@@ -47,10 +67,14 @@ export interface ValidatedRow {
   phone?: string;
   company?: string;
   metadata?: Record<string, string>;
+  /** Domínio descartável: o contato entra sinalizado (`risky`). Ausente em arquivos antigos. */
+  disposable?: boolean;
+  /** Domínio com possível erro de digitação: o domínio sugerido. Ausente em arquivos antigos. */
+  typoSuggestion?: string;
 }
 
 /**
- * - new         → email novo e válido
+ * - new        → email novo e válido
  * - add-to-list → já cadastrado, fora da lista de destino
  * - in-list     → já cadastrado e já na lista de destino (ignorado)
  * - already     → já cadastrado, sem lista de destino escolhida (ignorado)
@@ -58,18 +82,25 @@ export interface ValidatedRow {
  */
 export type RowKind = 'new' | 'add-to-list' | 'in-list' | 'already' | 'invalid';
 
-export interface ClassifiedRow extends Required<ValidatedRow> {
+export interface ClassifiedRow extends Required<Omit<ValidatedRow, 'disposable' | 'typoSuggestion'>> {
   kind: RowKind;
   reason?: string;
+  disposable?: boolean;
+  typoSuggestion?: string;
 }
 
 /**
  * Estado que atravessa os lotes de uma validação. `seen` é a única estrutura que cresce
  * com o arquivo (~100 MB de heap por milhão de emails) e limita o tamanho da importação.
+ * `domains` evita ir ao Redis a cada linha do mesmo domínio.
  */
 export interface ClassifyContext {
-  mxCache: Map<string, boolean>;
+  domains: Map<string, DomainVerdict>;
   seen: Set<string>;
+  /** Contexto do detector de erro de digitação, carregado uma vez por arquivo. */
+  typo?: Required<TypoContext>;
+  /** Sugestão já calculada por domínio (`null` = sem suspeita). */
+  typoByDomain?: Map<string, string | null>;
 }
 
 const COLUMN_ALIASES = {
@@ -95,6 +126,7 @@ interface NewContactDoc {
   company: string;
   lists: string[];
   metadata: Record<string, string>;
+  verification?: ContactVerification;
 }
 
 export class ContactService {
@@ -164,15 +196,23 @@ export class ContactService {
   }
 
   /**
-   * Cadastro avulso: domínio pelo DNS (grátis) e, com a verificação ligada, a caixa postal.
-   * Sem veredito do provedor o contato entra mesmo assim, sem verificação.
+   * Cadastro avulso: o domínio (DNS e checagem de descartável) e, com a verificação ligada,
+   * a caixa postal. Sem veredito do provedor o contato entra mesmo assim, sem verificação.
    */
-  private async assertCanReceiveMail(email: string): Promise<ContactVerification | null> {
-    if (!(await emailDomainHasMail(email))) {
+  private async assertCanReceiveMail(email: string, keepEmail = false): Promise<ContactVerification | null> {
+    // Suspeito de erro de digitação entra marcado, sem gastar consulta com um endereço errado.
+    const suggestion = keepEmail ? null : await emailTypoService.suggestionFor(email);
+    if (suggestion) return typoVerification(suggestion);
+
+    const domain = await domainCheck.checkEmail(email, { waitForSlotMs: INTERACTIVE_DOMAIN_WAIT_MS });
+    if (domain === 'no-mail') {
       throw new ValidationError([
         { field: 'email', message: 'O domínio deste email não existe ou não recebe mensagens.' },
       ]);
     }
+    // A caixa postal daria `disposable` de novo: não gasta o crédito.
+    if (domain === 'disposable') return disposableDomainVerification();
+
     const verification = await emailVerificationService.verifySingle(email);
     if (verification?.status === 'undeliverable') {
       throw new ValidationError([
@@ -189,7 +229,7 @@ export class ContactService {
     const email = data.email.toLowerCase().trim();
     const existing = await Contact.findOne({ email });
     if (existing) throw new ConflictError('Já existe um contato com este email.');
-    const verification = await this.assertCanReceiveMail(email);
+    const verification = await this.assertCanReceiveMail(email, data.keepEmail);
 
     const contact = await Contact.create({
       email,
@@ -216,7 +256,7 @@ export class ContactService {
         const clash = await Contact.findOne({ email: normalized });
         if (clash) throw new ConflictError('Já existe um contato com este email.');
         // Email novo: a verificação do endereço antigo não vale mais.
-        contact.verification = (await this.assertCanReceiveMail(normalized)) ?? undefined;
+        contact.verification = (await this.assertCanReceiveMail(normalized, data.keepEmail)) ?? undefined;
       }
       contact.email = normalized;
     }
@@ -275,11 +315,26 @@ export class ContactService {
     return new Map(docs.map((d) => [d.email, d]));
   }
 
-  private async warmDomainCache(emails: string[], cache: Map<string, boolean>): Promise<void> {
-    const domains = [...new Set(emails.map((e) => e.split('@')[1]?.toLowerCase()).filter(Boolean))].filter(
-      (d) => !cache.has(d)
-    );
-    await Promise.all(domains.map((d) => domainHasMail(d, cache)));
+  /** Só emails novos gastam consulta: quem já está na base não tem o domínio rechecado. */
+  private async warmDomainCache(emails: string[], cache: Map<string, DomainVerdict>): Promise<void> {
+    const pending = [...new Set(emails.map(domainOf).filter(Boolean))].filter((d) => !cache.has(d));
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (next < pending.length) {
+        const domain = pending[next++];
+        cache.set(domain, await domainCheck.check(domain, { waitForSlotMs: IMPORT_DOMAIN_WAIT_MS }));
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(IMPORT_DOMAIN_CONCURRENCY, pending.length) }, worker));
+  }
+
+  private async domainVerdict(email: string, cache: Map<string, DomainVerdict>): Promise<DomainVerdict> {
+    const domain = domainOf(email);
+    const known = cache.get(domain);
+    if (known) return known;
+    const verdict = await domainCheck.check(domain, { waitForSlotMs: IMPORT_DOMAIN_WAIT_MS });
+    cache.set(domain, verdict);
+    return verdict;
   }
 
   /**
@@ -325,12 +380,34 @@ export class ContactService {
     }
   }
 
+  /**
+   * Sugestão de domínio por email, com o contexto do cliente carregado uma vez por arquivo
+   * e o resultado guardado por domínio (a base tem poucos domínios e muitas linhas).
+   */
+  private async typoLookup(ctx: ClassifyContext): Promise<(email: string) => string | null> {
+    ctx.typo ??= await emailTypoService.context();
+    ctx.typoByDomain ??= new Map();
+    const typo = ctx.typo;
+    const memo = ctx.typoByDomain;
+    return (email: string) => {
+      const domain = domainOf(email);
+      if (!memo.has(domain)) memo.set(domain, suggestDomain(domain, typo));
+      return memo.get(domain) ?? null;
+    };
+  }
+
   /** Classifica um lote sem gravar; `ctx` acumula o cache de DNS e os emails já vistos. */
   async classifyBatch(rows: CsvRow[], listIds: string[], ctx: ClassifyContext): Promise<ClassifiedRow[]> {
     const mapped = rows.map((r) => this.mapRow(r));
 
     const lookup = mapped.map((m) => m.email).filter((e) => e && EMAIL_RE.test(e));
-    const [existing] = await Promise.all([this.findExistingByEmail(lookup), this.warmDomainCache(lookup, ctx.mxCache)]);
+    const existing = await this.findExistingByEmail(lookup);
+    const typoOf = await this.typoLookup(ctx);
+    // Suspeito de erro de digitação não gasta consulta: o domínio está errado.
+    await this.warmDomainCache(
+      lookup.filter((e) => !existing.has(e) && !typoOf(e)),
+      ctx.domains
+    );
 
     const out: ClassifiedRow[] = [];
 
@@ -338,6 +415,8 @@ export class ContactService {
       const email = fields.email;
       let kind: RowKind;
       let reason: string | undefined;
+      let disposable = false;
+      let typoSuggestion: string | null = null;
 
       if (!email || !EMAIL_RE.test(email)) {
         kind = 'invalid';
@@ -356,15 +435,30 @@ export class ContactService {
             const current = new Set(found.lists.map(String));
             kind = listIds.some((l) => !current.has(l)) ? 'add-to-list' : 'in-list';
           }
-        } else if (!(await domainHasMail(email.split('@')[1] ?? '', ctx.mxCache))) {
-          kind = 'invalid';
-          reason = 'Domínio inexistente';
         } else {
-          kind = 'new';
+          typoSuggestion = typoOf(email);
+          const verdict = typoSuggestion ? null : await this.domainVerdict(email, ctx.domains);
+          if (typoSuggestion) {
+            kind = 'new';
+            reason = `Possível erro de digitação: o certo deve ser @${typoSuggestion}`;
+          } else if (verdict === 'no-mail') {
+            kind = 'invalid';
+            reason = 'Domínio inexistente';
+          } else {
+            kind = 'new';
+            disposable = verdict === 'disposable';
+          }
         }
       }
 
-      out.push({ ...fields, email: email || '', kind, reason });
+      out.push({
+        ...fields,
+        email: email || '',
+        kind,
+        reason,
+        ...(disposable ? { disposable } : {}),
+        ...(typoSuggestion ? { typoSuggestion } : {}),
+      });
     }
 
     return out;
@@ -411,12 +505,19 @@ export class ContactService {
         company: r.company ?? '',
         lists: listIds,
         metadata: r.metadata ?? {},
+        ...this.importedVerification(r),
       });
     }
 
     await this.linkToLists(linkOps);
     const { inserted, duplicates } = await this.insertNew(toInsert);
     return { imported: imported + inserted, skipped: skipped + duplicates.length };
+  }
+
+  private importedVerification(row: ValidatedRow): { verification?: ContactVerification } {
+    if (row.typoSuggestion) return { verification: typoVerification(row.typoSuggestion) };
+    if (row.disposable) return { verification: disposableDomainVerification() };
+    return {};
   }
 
   async syncCounts(listIds: (Types.ObjectId | string)[]): Promise<void> {

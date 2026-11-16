@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { body, param, query } from 'express-validator';
 import * as ctrl from '../controllers/contact.controller';
 import * as ctrlImport from '../controllers/contactImport.controller';
+import * as ctrlTypo from '../controllers/typoDomain.controller';
+import { requireAdmin } from '../middleware/auth';
 import { importProgressLimiter } from '../middleware/rateLimit';
 import { handleImportUpload } from '../middleware/upload';
 import { EMAIL_NORMALIZE, validate } from '../middleware/validate';
@@ -16,6 +18,7 @@ const contactBodyRules = [
   body('lists.*').isMongoId().withMessage('ID de lista inválido.'),
   body('status').optional().isIn(['active', 'unsubscribed', 'bounced']).withMessage('Status inválido.'),
   body('metadata').optional().isObject().withMessage('Metadata deve ser um objeto.'),
+  body('keepEmail').optional().isBoolean().withMessage('keepEmail deve ser verdadeiro ou falso.').toBoolean(),
 ];
 
 router.get(
@@ -43,6 +46,34 @@ router.get(
   query('delivery').optional().isIn(['delivered', 'never', 'undeliverable']).withMessage('Filtro de entrega inválido.'),
   validate,
   ctrl.exportContacts
+);
+
+// Erro de digitação no domínio: a sugestão avulsa serve ao formulário de qualquer papel; a
+// revisão troca o email de muitos contatos de uma vez e é do admin.
+router.get(
+  '/email-suggestion',
+  query('email').isString().trim().isLength({ min: 3, max: 320 }).withMessage('Email inválido.'),
+  validate,
+  ctrlTypo.getEmailSuggestion
+);
+
+router.get('/typo-domains', requireAdmin, ctrlTypo.listTypoDomains);
+
+router.post(
+  '/typo-domains/fix',
+  requireAdmin,
+  body('from').isString().trim().isLength({ min: 3, max: 253 }).withMessage('Domínio de origem inválido.'),
+  body('to').isString().trim().isLength({ min: 3, max: 253 }).withMessage('Domínio de destino inválido.'),
+  validate,
+  ctrlTypo.fixTypoDomain
+);
+
+router.post(
+  '/typo-domains/accept',
+  requireAdmin,
+  body('domain').isString().trim().isLength({ min: 3, max: 253 }).withMessage('Domínio inválido.'),
+  validate,
+  ctrlTypo.acceptTypoDomain
 );
 
 router.get('/:id', param('id').isMongoId().withMessage('ID inválido.'), validate, ctrl.getContact);

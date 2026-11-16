@@ -13,7 +13,8 @@ src/
 ├── services/      # regra de negócio — um por módulo
 ├── models/        # schemas Mongoose
 ├── routes/        # rotas + validação (express-validator)
-├── queue/         # BullMQ: fila de envio, scheduler, cota de SMTP
+├── queue/         # BullMQ: envio, scheduler, importação, verificação, email de formulário; cotas
+├── tests/         # unit/ (sem banco) e integration/ (Mongo + Redis reais)
 ├── middleware/    # auth, errorHandler, validate, rateLimit, upload
 ├── errors/        # AppError e subclasses (BadRequest, NotFound, ...)
 ├── scripts/       # tarefas operacionais (rotação de chave, migração multi-tenant)
@@ -37,6 +38,9 @@ Health check: `GET /api/health`
 
 > `JWT_SECRET`, `ENCRYPTION_KEY` e `MONGO_URI` são obrigatórias — a API encerra no boot se faltarem.
 
+Todas as variáveis estão comentadas no [`.env.example`](.env.example). Porta 3000 ocupada:
+`PORT=3001 npm run dev` (e aponte o `environment.ts` do frontend para ela, sem comitar).
+
 ## Scripts
 
 | Comando | O que faz |
@@ -59,14 +63,20 @@ npm test                 # unidade — regra pura, sem banco nem rede
 npm run test:integration # integração — sobe a API (supertest) contra Mongo e Redis
 ```
 
-Os de **unidade** rodam em qualquer lugar. Cobrem o parser de CSV, a leitura de
-células do Excel, o contexto de cliente (o substituto do Row Level Security) e a
-criptografia de campo — inclusive a janela de rotação de chave.
+Os de **unidade** rodam em qualquer lugar. Cobrem, entre outros, o parser de CSV, a
+leitura de células do Excel, o contexto de cliente e o plugin `tenantScope` (o
+substituto do Row Level Security), a criptografia de campo (inclusive a janela de
+rotação de chave), o cliente da EmailListVerify, a checagem de domínio e o domínio de envio.
 
 Os de **integração** exigem os serviços no ar (`docker compose up -d mongo redis`) e
-usam um banco próprio, `MONGO_URI_TEST` (padrão `mailpulse_test`), que é limpo entre
-os testes. Cobrem o isolamento entre clientes pela API real, a portaria (login, token,
-papéis) e o relatório de envios.
+usam um banco próprio, `MONGO_URI_TEST` (padrão `mailpulse_test`, Redis db 15), que é
+limpo entre os testes. Cobrem o isolamento entre clientes pela API real, a portaria
+(login, token, papéis, sessão), importação, verificação de emails, checagem de domínio,
+webhook de formulário, domínio de envio, pausa por SMTP, exportação e relatórios. A
+EmailListVerify é dublada: nenhum teste gasta crédito.
+
+> No Windows, rode as suítes pelo PowerShell ou pelo terminal do VS Code. Pelo Git Bash
+> o Vitest falha antes de carregar os testes.
 
 O `src/app.ts` existe para isso: importá-lo NÃO abre porta, não conecta em banco e não
 sobe worker, então o supertest levanta a API sem efeito colateral. O `server.ts` ficou
@@ -83,9 +93,16 @@ não esconder justamente a falha de isolamento que a suíte existe para pegar.
 | `/api/dashboard` | logado | métricas (`/stats`) e relatório de envios da conta (`/sends`) |
 | `/api/lists`, `/api/contacts`, `/api/templates`, `/api/segments` | logado | CRUD dos módulos; contatos também exportam CSV |
 | `/api/campaigns` | logado | CRUD, disparo, pausa/retomada, agendamento, teste, logs, relatório CSV |
+| `/api/lists/:id/verification`, `POST /api/lists/:id/verify` | logado / **admin** | situação e disparo da verificação de emails da lista |
+| `GET /api/contacts/email-suggestion`, `/api/contacts/typo-domains` | logado / **admin** | sugestão para erro de digitação no domínio e revisão por domínio (corrigir, manter) |
 | `/api/upload` | logado | imagens e anexos |
 | `/api/smtp`, `/api/users`, `/api/bounces` | **admin** | credenciais SMTP, usuários, marcação manual de bounce |
+| `/api/sending-domains` | **admin** | SPF, DKIM e DMARC dos domínios de envio do cliente |
+| `/api/form-webhooks` | **admin** | webhooks de formulário: CRUD, nova URL, histórico de submissões |
+| `/api/hooks/forms/:token` | público (token na URL) | recebe o envio do formulário |
 | `/api/tenants` | **superadmin** | clientes da plataforma (criar, ativar/desativar, excluir) |
+| `/api/platform-settings` | **superadmin** | concorrência e taxa do motor de envio |
+| `/api/platform-monitor` | **superadmin** | filas, atividade por cliente e falhas recentes |
 | `/api/tracking` | público (assinado) | pixel de abertura, clique, descadastro |
 | `/api/webhooks/xmailer` | Bearer próprio | retorno de entrega/bounce do xMailer |
 
@@ -273,6 +290,121 @@ No worker, cada job respeita, nesta ordem: campanha excluída (descarta), campan
 bounce sem retry; erros de autenticação SMTP são registrados como falha do remetente, sem
 bouncar o contato. Acima de `CAMPAIGN_MAX_ERRORS` a campanha é auto-pausada.
 
+Contatos com verificação `undeliverable` ficam fora do disparo, como os `bounced`.
+
+### Higiene da base: domínio e caixa postal
+
+Três camadas. A primeira é local e grátis; as outras duas usam a EmailListVerify
+(`EMAIL_VERIFY_API_KEY`). Sem a chave, só o detector e o DNS decidem, e nada é cobrado.
+
+**Erro de digitação no domínio** (`utils/emailTypo.ts` + `services/emailTypo.service.ts`)
+vem antes de tudo e não chama nada externo. Ele aponta domínios como `gail.com`,
+`iclou.com` e `gmail.con`, e sugere o certo, por três sinais:
+
+1. distância de edição para provedores populares, mais um mapa de erros comuns;
+2. final de domínio inexistente (`.con`, `.cmo`...);
+3. domínio raro a uma letra de um domínio dominante na base do cliente.
+
+Ser frequente na base não livra um domínio parecido com provedor: `iclou.com` com 80
+contatos continua suspeito.
+
+- **Importação:** o suspeito entra marcado (`verification = { status: 'undeliverable',
+  result: 'typo_suspected', suggestion }`). Ele fica fora das campanhas e da verificação
+  em lote, e não gasta consulta ao provedor. A importação conta esses contatos em
+  `counters.typo`.
+- **Cadastro manual:** o painel consulta `GET /api/contacts/email-suggestion` e pergunta
+  "Você quis dizer...?". `keepEmail: true` no corpo segue a checagem normal; sem ele, o
+  suspeito entra marcado.
+- **Webhook de formulário:** não envia e registra o motivo com a sugestão.
+- **Revisão (admin):**
+  - `GET /api/contacts/typo-domains` lista os domínios suspeitos com a quantidade de
+    contatos.
+  - `POST /api/contacts/typo-domains/fix` (`{ from, to }`) troca o domínio de todos os
+    contatos dele e limpa a verificação. Quem colidiria com um email já cadastrado fica
+    como está e é contado em `conflicts`.
+  - `POST /api/contacts/typo-domains/accept` (`{ domain }`) grava o domínio como aceito
+    pelo cliente (coleção `AcceptedDomain`) e libera os contatos.
+
+Os domínios frequentes da base vêm de uma agregação por cliente, guardada no Redis por 6
+horas (`typo-ref:v1:<tenantId>`). Detalhes no [PRD](docs/prd-erro-digitacao.md).
+
+Para desfazer a marcação de um cliente sem passar pelo painel (por exemplo, num rollback
+do código), rode no `mongosh`:
+
+```js
+db.contacts.updateMany(
+  { tenantId: ObjectId('<id do cliente>'), 'verification.result': 'typo_suspected' },
+  { $unset: { verification: 1 } }
+)
+```
+
+**Checagem de domínio** (`services/domainCheck.service.ts`) roda em toda entrada de
+contato: importação, cadastro e edição manual, webhook de formulário.
+
+1. DNS (MX, com fallback para A), de graça. Sem nenhum dos dois, o contato é recusado.
+2. Se o DNS aprova, o domínio (nunca o email) vai ao `checkDisposable` da EmailListVerify
+   (1 crédito):
+   - `ok`: segue;
+   - `disposable`: entra como `risky` / `disposable` e dispensa a verificação de caixa
+     postal, que daria o mesmo resultado;
+   - `dead_server`, `invalid_mx`: recusado como domínio inexistente;
+   - qualquer outra resposta, erro, falta de crédito ou provedor fora: vale o DNS.
+     A checagem **falha aberta** e nunca trava importação, cadastro nem formulário.
+
+O veredito fica num cache **global** no Redis (o mesmo `gmail.com` serve a todos os
+clientes): 30 dias para `ok` e `disposable`, 1 dia para domínio sem email. Há um teto
+diário somando todos os clientes e um limite por segundo (`DOMAIN_CHECK_*` no
+`.env.example`); passando deles, vale o DNS. Na importação, só domínios de contatos que
+ainda não estão na base são consultados, com até 20 em paralelo. Detalhes no
+[PRD](docs/prd-verificacao-dominio.md).
+
+**Verificação de caixa postal** grava em cada contato `verification` (`status`:
+`deliverable`, `undeliverable`, `risky`, `unknown`, mais o resultado bruto do provedor e
+a data).
+
+- Cadastro manual e webhook de formulário verificam na hora, pela API unitária.
+- Uma lista inteira é verificada sob demanda, por admin, pela API de lista do provedor,
+  como job da fila `email-verification`. A tela acompanha pelo `GET /api/lists/:id/verification`.
+- Email verificado há menos de `EMAIL_VERIFY_TTL_DAYS` não volta ao provedor.
+- Cada cliente tem uma cota mensal (`EMAIL_VERIFY_MONTHLY_LIMIT`). Esgotada, a
+  verificação é pulada e o painel avisa.
+
+Detalhes no [PRD](docs/prd-verificacao-email.md).
+
+### Webhook de formulário
+
+Cada formulário externo (site, Elementor, RD Station, Zapier...) ganha uma URL
+`POST /api/hooks/forms/:token`. Quem preenche recebe na hora um email do cliente, feito a
+partir de um template do mMail, com todos os campos recebidos disponíveis como variáveis.
+
+- Aceita JSON, `x-www-form-urlencoded` (inclusive campos aninhados), `multipart` e texto
+  com JSON. Encontra email e nome sozinho, ou pelo campo fixado no painel.
+- A requisição só enfileira: o email sai pela fila `form-email`, com as mesmas regras de
+  SMTP, cota e domínio de envio das campanhas.
+- A URL é o segredo: token longo, guardado cifrado e buscado por hash.
+- Contra abuso: limite por IP (`FORM_WEBHOOK_IP_MAX`), teto por hora em cada webhook, o
+  mesmo email não recebe de novo em 10 minutos, e um campo honeypot descarta robôs.
+- O histórico de submissões, com o motivo de cada recusa, fica 90 dias.
+
+Detalhes no [PRD](docs/prd-webhook-formularios.md).
+
+### Domínio de envio (SPF, DKIM, DMARC)
+
+Quando o SMTP do cliente aponta para um host da própria plataforma
+(`SENDING_PLATFORM_HOSTS`), o disparo só acontece se o domínio do remetente tiver SPF,
+DKIM e DMARC em ordem. A tela **Domínios** mostra os registros que faltam e reconfere sob
+demanda. No disparo, um domínio ainda não aprovado, ou conferido há mais de 6 horas, é
+conferido de novo antes de liberar o envio.
+
+### Painel da plataforma (superadmin)
+
+- **Plataforma** (`/api/platform-settings`): concorrência e taxa por minuto do motor de
+  envio, compartilhado por todos os clientes. Os valores do `.env`
+  (`EMAIL_WORKER_CONCURRENCY`, `EMAIL_WORKER_RATE_PER_MINUTE`) só semeiam a primeira
+  subida; depois vale o banco.
+- **Operação** (`/api/platform-monitor`): estado das filas, atividade por cliente e
+  falhas recentes de envio.
+
 ## Deploy no EasyPanel
 
 O EasyPanel já cuida de domínio, TLS e roteamento, então a stack de lá é diferente da
@@ -371,3 +503,6 @@ bounce em massa e queimam a reputação do domínio — dano que não se desfaz.
 4. `npm run verify` antes de abrir o PR; o hook `pre-commit` já roda lint + tipos.
 5. PR preenchendo o template (Issue, o que mudou, validação, riscos, próximos passos).
 6. Merge só com o CI verde.
+
+As regras completas, incluindo o que não pode quebrar no isolamento entre clientes,
+estão no [AGENTS.md](AGENTS.md). Funcionalidade nova ou grande começa por um PRD em `docs/`.

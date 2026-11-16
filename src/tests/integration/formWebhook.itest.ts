@@ -14,10 +14,10 @@ import formWebhookService from '../../services/formWebhook.service';
 import { criarCliente } from './fabricas';
 
 // Sem DNS de verdade nos testes: todo domínio "recebe email".
-vi.mock('../../utils/emailHygiene', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../utils/emailHygiene')>()),
-  emailDomainHasMail: async () => true,
-}));
+vi.mock('../../services/domainCheck.service', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../../services/domainCheck.service')>();
+  return { ...original, default: { check: async () => 'ok', checkEmail: async () => 'ok' } };
+});
 
 type Cliente = Awaited<ReturnType<typeof criarCliente>>;
 
@@ -364,6 +364,19 @@ describe('webhook de formulário: envio', () => {
     const [depois] = await historico(a, webhook.id);
     expect(depois).toMatchObject({ status: 'failed' });
     expect(depois.reason).toMatch(/bounce/);
+  });
+
+  it('não envia para domínio com erro de digitação e diz qual seria o certo', async () => {
+    const a = await criarCliente('Cliente A');
+    const send = vi.spyOn(emailService, 'send').mockResolvedValue({ messageId: 'msg-1' });
+    const { webhook, sub } = await recebido(a, { email: 'ana@gail.com' });
+
+    await runWithTenant(a.tenant._id, () => formWebhookService.deliver(sub._id));
+
+    expect(send).not.toHaveBeenCalled();
+    const [depois] = await historico(a, webhook.id);
+    expect(depois).toMatchObject({ status: 'failed' });
+    expect(depois.reason).toMatch(/erro de digitação.*@gmail\.com/);
   });
 
   it('template apagado depois do recebimento vira falha explicada, sem envio', async () => {

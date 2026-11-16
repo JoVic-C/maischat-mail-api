@@ -10,6 +10,8 @@ export interface ContactVerification {
   /** Resultado bruto do provedor, para auditoria e para explicar a classificação. */
   result: string;
   checkedAt: Date;
+  /** Só em `typo_suspected`: o domínio que a pessoa provavelmente quis digitar. */
+  suggestion?: string;
 }
 
 /**
@@ -32,6 +34,12 @@ const ELV_STATUS: Record<string, VerificationStatus> = {
   antispam_system: 'unknown',
 };
 
+/**
+ * Marcação do detector de erro de digitação (`utils/emailTypo`), não do provedor. Fica
+ * `undeliverable` para o contato sair das campanhas até alguém revisar o domínio.
+ */
+export const TYPO_RESULT = 'typo_suspected';
+
 const ELV_REASON: Record<string, string> = {
   ok: 'Caixa postal válida',
   email_disabled: 'Caixa postal não existe ou está desativada',
@@ -44,7 +52,20 @@ const ELV_REASON: Record<string, string> = {
   unknown: 'Não foi possível verificar',
   smtp_protocol: 'Não foi possível verificar',
   antispam_system: 'O antispam do destino impediu a verificação',
+  [TYPO_RESULT]: 'Possível erro de digitação no domínio',
 };
+
+/**
+ * Veredito de um email cujo domínio a checagem de domínio já apontou como descartável.
+ * É o mesmo que a verificação de caixa postal daria, então dispensa gastar crédito nela.
+ */
+export function disposableDomainVerification(checkedAt = new Date()): ContactVerification {
+  return { status: classifyElvResult('disposable'), result: 'disposable', checkedAt };
+}
+
+export function typoVerification(suggestion: string, checkedAt = new Date()): ContactVerification {
+  return { status: 'undeliverable', result: TYPO_RESULT, checkedAt, suggestion };
+}
 
 export function classifyElvResult(result: string): VerificationStatus {
   return ELV_STATUS[result.trim().toLowerCase()] ?? 'unknown';

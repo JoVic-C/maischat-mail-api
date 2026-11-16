@@ -7,10 +7,10 @@ import contactImportService, { ensureImportDir, IMPORT_DIR, safeUnlink } from '.
 import { criarCliente } from './fabricas';
 
 // Sem DNS de verdade nos testes: todo domínio "recebe email".
-vi.mock('../../utils/emailHygiene', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../utils/emailHygiene')>()),
-  domainHasMail: async () => true,
-}));
+vi.mock('../../services/domainCheck.service', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../../services/domainCheck.service')>();
+  return { ...original, default: { check: async () => 'ok', checkEmail: async () => 'ok' } };
+});
 
 const LINHAS = 1000;
 

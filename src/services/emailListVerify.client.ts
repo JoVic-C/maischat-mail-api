@@ -36,8 +36,16 @@ export interface MaillistResultRow {
   result: string;
 }
 
+/** `ok`, `disposable`, `dead_server`, `invalid_mx` ou `unknown` (este não é cobrado). */
+export interface DomainCheckResult {
+  result: string;
+  mxServer: string | null;
+}
+
 /** A verificação unitária faz SMTP de verdade no destino; o teto evita segurar o cadastro. */
 const SINGLE_TIMEOUT_MS = 15_000;
+/** A checagem de domínio é só DNS e base de descartáveis do lado deles: responde rápido. */
+const DOMAIN_TIMEOUT_MS = 10_000;
 const DEFAULT_TIMEOUT_MS = 60_000;
 /** Download de lista grande: o corpo chega em streaming, o teto vale só para começar. */
 const DOWNLOAD_TIMEOUT_MS = 5 * 60_000;
@@ -70,6 +78,26 @@ export class EmailListVerifyClient {
       throw new EmailVerifyProviderError('Sem créditos na EmailListVerify.', 'credit');
     }
     return result;
+  }
+
+  /** Só o domínio vai ao provedor, nunca o email. Responde 201 com JSON. */
+  async checkDisposable(domain: string): Promise<DomainCheckResult> {
+    const res = await this.request(`/api/checkDisposable?domain=${encodeURIComponent(domain)}`, {
+      method: 'POST',
+      timeoutMs: DOMAIN_TIMEOUT_MS,
+    });
+    let body: { result?: unknown; mxServer?: unknown };
+    try {
+      body = (await res.json()) as typeof body;
+    } catch {
+      throw new EmailVerifyProviderError('A EmailListVerify respondeu a checagem de domínio sem JSON.', 'unavailable');
+    }
+    return {
+      result: String(body.result ?? 'unknown')
+        .trim()
+        .toLowerCase(),
+      mxServer: typeof body.mxServer === 'string' ? body.mxServer : null,
+    };
   }
 
   /** O nome precisa ser único por conta: a API recusa um segundo envio com o mesmo nome. */

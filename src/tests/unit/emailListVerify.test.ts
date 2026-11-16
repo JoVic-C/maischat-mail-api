@@ -101,6 +101,33 @@ describe('cliente da EmailListVerify', () => {
     expect(err.transient).toBe(true);
   });
 
+  it('checa o domínio por POST, sem o email, e lê o resultado', async () => {
+    fetchMock.mockResolvedValue(
+      resposta(
+        201,
+        JSON.stringify({ domain: 'mailinator.com', result: 'Disposable', internalResult: null, mxServer: 'mx.m.com' })
+      )
+    );
+    expect(await client.checkDisposable('mailinator.com')).toEqual({ result: 'disposable', mxServer: 'mx.m.com' });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://elv.test/api/checkDisposable?domain=mailinator.com');
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>)['x-api-key']).toBe('chave-teste');
+  });
+
+  it('checagem de domínio sem JSON é falha passageira', async () => {
+    fetchMock.mockResolvedValue(resposta(201, '<html>', 'text/html'));
+    const err = await erroDe(client.checkDisposable('x.com'));
+    expect(err.kind).toBe('unavailable');
+    expect(err.transient).toBe(true);
+  });
+
+  it('checagem de domínio sem créditos vira erro de crédito', async () => {
+    fetchMock.mockResolvedValue(resposta(403, JSON.stringify({ message: 'Not enough credit, 1 required.' })));
+    expect((await erroDe(client.checkDisposable('x.com'))).kind).toBe('credit');
+  });
+
   it('envia a lista como arquivo multipart e devolve o id', async () => {
     fetchMock.mockResolvedValue(resposta(201, '2616806', 'text/html'));
     expect(await client.uploadList('email\nana@x.com\n', 'mailpulse-1.csv')).toBe('2616806');

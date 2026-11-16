@@ -9,10 +9,12 @@ import SmtpSettings from '../models/SmtpSettings';
 import Template from '../models/Template';
 import { enqueueFormEmail } from '../queue/formEmail.queue';
 import { reserveSmtpQuota } from '../queue/smtpQuota';
-import { emailDomainHasMail } from '../utils/emailHygiene';
+import { disposableDomainVerification } from '../utils/emailVerification';
 import { extractFields, type FormFields, pickEmail, pickName } from '../utils/formFields';
 import { garantirHtmlEnviavel } from '../utils/htmlEscapado';
+import domainCheck from './domainCheck.service';
 import emailService from './email.service';
+import emailTypoService from './emailTypo.service';
 import emailVerificationService from './emailVerification.service';
 import sendingDomainService from './sendingDomain.service';
 import smtpService, { FALLBACK_SMTP_ID } from './smtp.service';
@@ -63,6 +65,8 @@ export type DeliverOutcome = { kind: 'done' } | { kind: 'retry-after'; ms: numbe
 type SubmissionBase = Pick<IFormSubmission, 'email' | 'name' | 'fields' | 'ip'> & { webhookId: Types.ObjectId };
 
 const DEDUPE_SECONDS = 10 * 60;
+/** Roda num worker: pode esperar um pouco por vaga no limite do provedor. */
+const FORM_DOMAIN_WAIT_MS = 3000;
 const TOKEN_FORMAT = /^[A-Za-z0-9_-]{20,100}$/;
 
 export function hashToken(token: string): string {
@@ -204,7 +208,16 @@ export class FormWebhookService {
     if (await Contact.exists({ email: submission.email, status: 'bounced' })) {
       return this.fail(submissionId, 'Endereço com bounce registrado: o email não foi enviado.');
     }
-    if (!(await emailDomainHasMail(submission.email))) {
+    // Sem ninguém para confirmar: enviar seria entregar a um estranho ou a uma armadilha de spam.
+    const typo = await emailTypoService.suggestionFor(submission.email);
+    if (typo) {
+      return this.fail(
+        submissionId,
+        `O domínio do email parece ter erro de digitação (o certo deve ser @${typo}): o email não foi enviado.`
+      );
+    }
+    const domain = await domainCheck.checkEmail(submission.email, { waitForSlotMs: FORM_DOMAIN_WAIT_MS });
+    if (domain === 'no-mail') {
       return this.fail(submissionId, 'O domínio do email não existe ou não recebe mensagens: o email não foi enviado.');
     }
 
@@ -231,7 +244,7 @@ export class FormWebhookService {
     if (!quota.ok) return { kind: 'retry-after', ms: quota.retryAfterMs };
 
     // Depois da cota do SMTP: a espera por cota reentra aqui, e verificar antes cobraria de novo.
-    const mailboxProblem = await this.mailboxProblem(submission.email);
+    const mailboxProblem = await this.mailboxProblem(submission.email, domain === 'disposable');
     if (mailboxProblem) return this.fail(submissionId, mailboxProblem);
 
     const fields = (submission.fields ?? {}) as FormFields;
@@ -265,12 +278,15 @@ export class FormWebhookService {
   }
 
   /** Usa a verificação do contato, se recente; senão consulta o provedor e guarda no contato. */
-  private async mailboxProblem(email: string): Promise<string | null> {
+  /** Domínio descartável é aceito e sinalizado; a caixa postal daria o mesmo resultado, sem gastar crédito. */
+  private async mailboxProblem(email: string, disposableDomain: boolean): Promise<string | null> {
     const contact = await Contact.findOne({ email }).select('verification');
     let verification = emailVerificationService.isFresh(contact?.verification) ? contact?.verification : null;
 
     if (!verification) {
-      verification = await emailVerificationService.verifySingle(email);
+      verification = disposableDomain
+        ? disposableDomainVerification()
+        : await emailVerificationService.verifySingle(email);
       if (verification && contact) {
         contact.verification = verification;
         await contact.save();
